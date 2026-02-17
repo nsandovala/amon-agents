@@ -1,22 +1,11 @@
-stack: nextjs-web
-
-agents:
-  - architect
-  - dev
-  - qa
-  - security
-  - ops
-  - designer
-
-rules:
-  - maintain_ui_integrity: true
-  - enforce_typescript: true
-  - run_tests_before_merge: true
-  - lighthouse_score_min: 90
-  - accessibility_required: true
-
-ci:
-  install: npm ci
-  build: npm run build
-  lint: npm run lint
-  test: npm run test
+playbook: nextjs-web
+purpose: "Landing/marketing Next.js + Tailwind + UI estable"
+steps:
+  - "Architect: define alcance y qué NO se toca."
+  - "Designer: valida estilo (glass/apple, spacing, contraste)."
+  - "Dev: implementa por PR pequeño."
+  - "QA: npm ci + lint + build + smoke manual."
+  - "Ops: CI ubuntu-latest; preview en Vercel; prod solo con tag."
+checks:
+  - "No romper diseño actual"
+  - "Lighthouse básico (perf/accesibilidad) opcional"

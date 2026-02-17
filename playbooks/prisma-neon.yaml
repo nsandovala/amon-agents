@@ -1,0 +1,6 @@
+playbook: prisma-neon
+purpose: "Prisma + Neon en Next.js sin romper CI"
+rules:
+  - "CI: solo prisma generate (sin migraciones)"
+  - "Migraciones solo en entorno controlado"
+  - "DATABASE_URL jamás se imprime en logs"

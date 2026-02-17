@@ -1,0 +1,10 @@
+playbook: nextjs-api-ai
+purpose: "API routes (App Router) + demo/chat sin datos sensibles"
+rules:
+  - "Modo demo: NO guardar datos personales"
+  - "Respuestas mock o controladas"
+  - "Rate limit básico si se expone público"
+qa_minimum:
+  - "curl POST local"
+  - "verificar status codes"
+  - "manejo de errores consistente"

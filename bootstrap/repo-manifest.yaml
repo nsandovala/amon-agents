@@ -1,0 +1,21 @@
+version: 1
+defaults:
+  owner: "nsandovala"
+  license: "MIT"
+  branch: "main"
+
+profiles:
+  node-next:
+    workflows: ["node-ci.yml", "codeql.yml"]
+    dependabot: true
+    include_common: true
+
+  python-radar:
+    workflows: ["python-ci.yml", "codeql.yml"]
+    dependabot: true
+    include_common: true
+
+  mixed:
+    workflows: ["node-ci.yml", "python-ci.yml", "codeql.yml"]
+    dependabot: true
+    include_common: true
