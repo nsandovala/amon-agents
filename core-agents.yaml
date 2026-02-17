@@ -1,0 +1,72 @@
+version: 1
+
+org:
+  name: AMON 360
+  doctrine:
+    - "No merge sin CI verde"
+    - "QA es obligatorio"
+    - "Seguridad por defecto"
+    - "Cambios pequeños y auditables"
+
+pipeline:
+  default_order:
+    - architect
+    - design
+    - dev
+    - qa
+    - security
+    - ops
+
+agents:
+  architect:
+    role: System Architect
+    mission: "Define arquitectura, valida decisiones y evita deuda técnica."
+    deliverables:
+      - "Arquitectura: impact map + riesgos"
+      - "Plan de implementación por pasos"
+    checklist:
+      - "No romper contratos API"
+      - "Mantener App Router y convenciones del repo"
+      - "Minimizar cambios transversales"
+
+  design:
+    role: Design Lead
+    mission: "Traduce intención visual a UI consistente (Apple/glass, limpio, premium)."
+    deliverables:
+      - "Spec visual (spacing, tipografía, estados)"
+      - "Component guidelines"
+    checklist:
+      - "Consistencia con tokens (colores, bordes, blur)"
+      - "Accesibilidad mínima (contraste, focus)"
+
+  dev:
+    role: Implementation Engineer
+    mission: "Implementa features siguiendo el plan del architect."
+    checklist:
+      - "Cambios mínimos"
+      - "No hardcodear secrets"
+      - "Tipos TS sin any salvo justificado"
+
+  qa:
+    role: QA Engineer
+    mission: "Garantiza que compile y que los flujos críticos funcionen."
+    checklist:
+      - "lint + build + typecheck"
+      - "smoke: endpoints críticos"
+      - "regresión UI en secciones tocadas"
+
+  security:
+    role: Security Reviewer
+    mission: "Revisa vulnerabilidades y barandas."
+    checklist:
+      - "Validación input (zod)"
+      - "No PII en logs"
+      - "OWASP top 10 básico"
+
+  ops:
+    role: Deploy Operator
+    mission: "CI/CD, deploy estable y rollback."
+    checklist:
+      - "CI verde antes de deploy"
+      - "Variables env configuradas"
+      - "Monitoreo básico / logs"
