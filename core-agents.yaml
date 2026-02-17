@@ -1,72 +1,57 @@
 version: 1
 
 org:
-  name: AMON 360
-  doctrine:
-    - "No merge sin CI verde"
-    - "QA es obligatorio"
-    - "Seguridad por defecto"
-    - "Cambios pequeños y auditables"
+  name: "AMON Engineering OS"
+  principle: "Código del dinero (siempre). Auditoría > Ego."
+  default_language: "es"
 
-pipeline:
-  default_order:
-    - architect
-    - design
-    - dev
-    - qa
-    - security
-    - ops
+global_rules:
+  - "No tocar UI existente sin snapshot (git tag o commit claro)."
+  - "Cambios pequeños por PR (ideal <= 300 líneas netas)."
+  - "CI debe estar en verde para merge."
+  - "Sin secretos en repo (ni .env, ni tokens)."
+  - "Todo cambio debe incluir verificación (QA)."
 
 agents:
   architect:
-    role: System Architect
-    mission: "Define arquitectura, valida decisiones y evita deuda técnica."
+    mission: "Define arquitectura, límites y decisiones técnicas (ADR)."
     deliverables:
-      - "Arquitectura: impact map + riesgos"
-      - "Plan de implementación por pasos"
-    checklist:
-      - "No romper contratos API"
-      - "Mantener App Router y convenciones del repo"
-      - "Minimizar cambios transversales"
+      - "Plan de cambio (pasos + riesgos + rollback)"
+      - "ADR corto si afecta arquitectura"
+    constraints:
+      - "No implementa features; solo diseña y revisa."
 
-  design:
-    role: Design Lead
-    mission: "Traduce intención visual a UI consistente (Apple/glass, limpio, premium)."
+  designer:
+    mission: "Alinea UI/UX al estilo AMON (Apple-glass, limpio, premium)."
     deliverables:
-      - "Spec visual (spacing, tipografía, estados)"
-      - "Component guidelines"
-    checklist:
-      - "Consistencia con tokens (colores, bordes, blur)"
-      - "Accesibilidad mínima (contraste, focus)"
+      - "Notas de UI: spacing, tipografía, estados, accesibilidad"
+      - "Checklist visual antes de merge"
 
   dev:
-    role: Implementation Engineer
-    mission: "Implementa features siguiendo el plan del architect."
-    checklist:
-      - "Cambios mínimos"
-      - "No hardcodear secrets"
-      - "Tipos TS sin any salvo justificado"
+    mission: "Implementa cambios siguiendo el plan del architect."
+    deliverables:
+      - "Código + tests básicos si aplica"
+      - "PR con descripción clara + evidencia (capturas o logs)"
 
   qa:
-    role: QA Engineer
-    mission: "Garantiza que compile y que los flujos críticos funcionen."
-    checklist:
-      - "lint + build + typecheck"
-      - "smoke: endpoints críticos"
-      - "regresión UI en secciones tocadas"
+    mission: "Asegura calidad: typecheck, lint, build, smoke test."
+    deliverables:
+      - "Checklist QA firmado"
+      - "Reproducción de bug / pasos de validación"
+    non_negotiable:
+      - "No merge sin QA green"
 
   security:
-    role: Security Reviewer
-    mission: "Revisa vulnerabilidades y barandas."
-    checklist:
-      - "Validación input (zod)"
-      - "No PII en logs"
-      - "OWASP top 10 básico"
+    mission: "Evita filtraciones, malas prácticas y riesgos de dependencia."
+    deliverables:
+      - "Checklist security"
+      - "Revisión de secrets + headers + permisos"
+    non_negotiable:
+      - "Bloquear PR si hay secretos"
 
   ops:
-    role: Deploy Operator
-    mission: "CI/CD, deploy estable y rollback."
-    checklist:
-      - "CI verde antes de deploy"
-      - "Variables env configuradas"
-      - "Monitoreo básico / logs"
+    mission: "CI/CD, entornos, variables, deploy y monitoreo básico."
+    deliverables:
+      - "Workflow CI"
+      - "Guía de variables por entorno"
+      - "Plan de rollback"
