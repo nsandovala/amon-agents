@@ -1,0 +1,22 @@
+stack: nextjs-web
+
+agents:
+  - architect
+  - dev
+  - qa
+  - security
+  - ops
+  - designer
+
+rules:
+  - maintain_ui_integrity: true
+  - enforce_typescript: true
+  - run_tests_before_merge: true
+  - lighthouse_score_min: 90
+  - accessibility_required: true
+
+ci:
+  install: npm ci
+  build: npm run build
+  lint: npm run lint
+  test: npm run test
