@@ -1,0 +1,11 @@
+*
+!.gitignore
+!README.md
+!plans/
+!plans/.gitkeep
+!reviews/
+!reviews/.gitkeep
+!logs/
+!logs/.gitkeep
+!adr/
+!adr/.gitkeep

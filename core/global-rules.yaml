@@ -1,4 +1,4 @@
-version: 1
+version: "1.0.0"
 
 rules:
   - "No tocar UI existente sin referencia visual o contexto previo."
@@ -27,3 +27,4 @@ anti_patterns:
   - "Features iniciadas sin plan"
   - "Cambios grandes sin QA"
   - "Múltiples fuentes de verdad para el mismo agente"
+
