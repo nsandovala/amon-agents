@@ -1,0 +1,29 @@
+version: 1
+
+rules:
+  - "No tocar UI existente sin referencia visual o contexto previo."
+  - "Cambios pequeños por PR."
+  - "CI en verde antes de merge."
+  - "Sin secretos en repositorio."
+  - "Todo cambio debe incluir verificación."
+  - "Los prompts del sistema no deben quedar enterrados en componentes UI."
+  - "Ningún repo producto redefine el core de agentes sin dejar trazabilidad."
+  - "Mocks deben estar marcados y aislados."
+  - "Toda automatización debe dejar salida legible por humanos."
+  - "Si una tarea afecta arquitectura, debe existir criterio de rollback."
+  - "Si una tarea afecta seguridad, security debe participar."
+  - "Si una tarea afecta UX, designer debe revisar antes de cerrar."
+  - "Si una tarea nace como exploración, debe etiquetarse como exploración y no mezclarse con producción."
+
+operating_principles:
+  - "Humanos dirigen. La IA ejecuta dentro de límites explícitos."
+  - "La claridad operativa vale más que la complejidad aparente."
+  - "Una mejora sin trazabilidad no cuenta como mejora."
+  - "El sistema debe poder ser entendido por otra persona sin contexto oculto."
+
+anti_patterns:
+  - "Prompts escondidos en frontend"
+  - "Agentes duplicados entre repos sin coordinación"
+  - "Features iniciadas sin plan"
+  - "Cambios grandes sin QA"
+  - "Múltiples fuentes de verdad para el mismo agente"

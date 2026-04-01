@@ -1,0 +1,80 @@
+version: 1
+
+default_output:
+  required_fields:
+    - goal
+    - scope
+    - files_to_touch
+    - plan
+    - risks
+    - validations
+    - done_when
+
+field_rules:
+  goal:
+    description: "Objetivo corto, concreto y verificable"
+    type: "string"
+
+  scope:
+    description: "Qué entra y qué queda fuera del cambio"
+    type: "string"
+
+  files_to_touch:
+    description: "Archivos o carpetas que deberían ser modificados o revisados"
+    type: "list[string]"
+
+  plan:
+    description: "Pasos concretos, ordenados y ejecutables"
+    type: "list[string]"
+
+  risks:
+    description: "Riesgos técnicos, visuales, de seguridad o regresión"
+    type: "list[string]"
+
+  validations:
+    description: "Pruebas, revisiones o checks obligatorios antes de cerrar"
+    type: "list[string]"
+
+  done_when:
+    description: "Condiciones objetivas para considerar la tarea terminada"
+    type: "list[string]"
+
+agent_specific_notes:
+  architect:
+    must_emphasize:
+      - "scope"
+      - "risks"
+      - "done_when"
+
+  designer:
+    must_emphasize:
+      - "scope"
+      - "validations"
+
+  dev:
+    must_emphasize:
+      - "files_to_touch"
+      - "plan"
+      - "validations"
+
+  qa:
+    must_emphasize:
+      - "risks"
+      - "validations"
+      - "done_when"
+
+  ops:
+    must_emphasize:
+      - "risks"
+      - "validations"
+
+  security:
+    must_emphasize:
+      - "risks"
+      - "validations"
+
+rules:
+  - "No generar respuestas libres sin estructura."
+  - "No omitir campos requeridos."
+  - "Si un campo no aplica, explicar brevemente por qué en vez de inventar contenido."
+  - "Toda salida debe ser reutilizable por un humano o una interfaz."
