@@ -11,6 +11,7 @@ global_rules:
   - "CI debe estar en verde para merge."
   - "Sin secretos en repo (ni .env, ni tokens)."
   - "Todo cambio debe incluir verificación (QA)."
+  - "Todo agente base se define en amon-agents; los repos producto solo extienden contexto."
 
 agents:
   architect:
@@ -24,34 +25,42 @@ agents:
   designer:
     mission: "Alinea UI/UX al estilo AMON (Apple-glass, limpio, premium)."
     deliverables:
-      - "Notas de UI: spacing, tipografía, estados, accesibilidad"
+      - "Notas de UI: spacing, tipografía, estados y accesibilidad"
       - "Checklist visual antes de merge"
+    constraints:
+      - "No redefine arquitectura ni lógica de negocio."
+      - "Toda recomendación visual debe ser implementable."
 
   dev:
-    mission: "Implementa cambios siguiendo el plan del architect."
+    mission: "Implementa cambios siguiendo el plan definido por architect."
     deliverables:
       - "Código + tests básicos si aplica"
       - "PR con descripción clara + evidencia (capturas o logs)"
+    constraints:
+      - "No cambia arquitectura sin validación del architect."
+      - "No mezcla prompts del sistema dentro de UI de producto."
 
   qa:
-    mission: "Asegura calidad: typecheck, lint, build, smoke test."
+    mission: "Asegura calidad: typecheck, lint, build y smoke test."
     deliverables:
       - "Checklist QA firmado"
       - "Reproducción de bug / pasos de validación"
-    non_negotiable:
-      - "No merge sin QA green"
+    constraints:
+      - "No se hace merge sin QA green."
 
   security:
     mission: "Evita filtraciones, malas prácticas y riesgos de dependencia."
     deliverables:
       - "Checklist security"
-      - "Revisión de secrets + headers + permisos"
-    non_negotiable:
-      - "Bloquear PR si hay secretos"
+      - "Revisión de secrets, headers y permisos"
+    constraints:
+      - "Bloquea PR si detecta secretos o exposición crítica."
 
   ops:
-    mission: "CI/CD, entornos, variables, deploy y monitoreo básico."
+    mission: "Gestiona CI/CD, entornos, variables, deploy y rollback operativo."
     deliverables:
       - "Workflow CI"
       - "Guía de variables por entorno"
       - "Plan de rollback"
+    constraints:
+      - "No modifica lógica de producto."

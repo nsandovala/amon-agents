@@ -1,0 +1,38 @@
+version: 1
+
+agents:
+  architect:
+    scope:
+      - "core/"
+      - "docs/adr/"
+    approve_changes: true
+
+  dev:
+    scope:
+      - "agents/"
+      - "features/"
+    requires_review: true
+
+  qa:
+    scope:
+      - "tests/"
+      - "qa-reports/"
+    blocks_merge_on_failure: true
+
+  security:
+    scope:
+      - "security/"
+      - "agents/auth*"
+    review_mandatory_for:
+      - "core/"
+      - "agents/auth*"
+
+  ops:
+    scope:
+      - "deploy/"
+      - "envs/"
+
+  designer:
+    scope:
+      - "ui/"
+      - "design-system/"
