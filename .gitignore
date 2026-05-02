@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files (sensitive)
+.env
+.env.local
+
+# OS files
+.DS_Store
+
+# Logs
+*.log

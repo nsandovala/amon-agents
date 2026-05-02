@@ -1,0 +1,13 @@
+# Core operativo
+/core/ @nsandovala
+
+# Bootstrap y plantillas
+/bootstrap/ @nsandovala
+
+# Playbooks y templates
+/playbooks/ @nsandovala
+/templates/ @nsandovala
+
+# Outputs y documentación raíz
+/outputs/ @nsandovala
+/README.md @nsandovala

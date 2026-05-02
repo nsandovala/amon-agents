@@ -1,0 +1,42 @@
+version: 1
+
+name: "python-radar"
+description: "Playbook base para proyectos Python del ecosistema AMON orientados a radar, análisis o automatización."
+
+applies_to:
+  - "scripts Python"
+  - "módulos de análisis"
+  - "servicios ligeros"
+  - "prototipos con lógica reusable"
+
+goals:
+  - "Mantener estructura clara"
+  - "Facilitar QA y debugging"
+  - "Evitar mezclar lógica, config y outputs"
+  - "Preparar crecimiento hacia integración con otros repos"
+
+recommended_structure:
+  - "src/"
+  - "tests/"
+  - "requirements.txt o pyproject.toml"
+  - ".github/workflows/python-ci.yml"
+  - "README.md"
+
+agent_flow:
+  - "architect define alcance"
+  - "dev implementa módulo o script"
+  - "qa valida con lint, test y ejecución mínima"
+
+checklist:
+  - "Entradas y salidas definidas"
+  - "Sin secretos hardcodeados"
+  - "Logs legibles"
+  - "Errores manejados"
+  - "README actualizado"
+  - "Tests básicos si aplica"
+
+anti_patterns:
+  - "Scripts monolíticos sin separación"
+  - "Variables mágicas sin config"
+  - "Outputs mezclados con código"
+  - "Lógica experimental en producción"

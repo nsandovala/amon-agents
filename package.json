@@ -1,0 +1,29 @@
+{
+  "name": "amon-agents-engine",
+  "version": "1.0.0",
+  "description": "Capa ejecutable en TypeScript del sistema de agentes AMON",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/core/run-agent.js",
+    "dev": "ts-node src/core/run-agent.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "amon",
+    "agents",
+    "orchestration"
+  ],
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "js-yaml": "^4.1.0"
+  }
+}
