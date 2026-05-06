@@ -29,6 +29,12 @@ export interface ValidationResult {
   errors: string[];
 }
 
+export interface FieldRule {
+  type: "string" | "number" | "list[string]";
+  allowedValues?: string[];
+  required?: boolean;
+}
+
 /**
  * Valida que un objeto tenga todos los campos requeridos del contrato de salida.
  */
@@ -67,6 +73,74 @@ export function validateOutput(data: unknown): ValidationResult {
     }
   }
 
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Valida campos adicionales fuera del contrato base.
+ * Se usa para salidas especializadas como State-Guardian y Scorer.
+ */
+export function validateFields(
+  data: unknown,
+  rules: Record<string, FieldRule>
+): ValidationResult {
+  if (typeof data !== "object" || data === null) {
+    return { valid: false, errors: ["El output no es un objeto valido."] };
+  }
+
+  const obj = data as Record<string, unknown>;
+  const errors: string[] = [];
+
+  for (const [field, rule] of Object.entries(rules)) {
+    const required = rule.required ?? true;
+
+    if (!(field in obj)) {
+      if (required) {
+        errors.push(`Falta campo requerido: "${field}"`);
+      }
+      continue;
+    }
+
+    const value = obj[field];
+
+    if (rule.type === "string") {
+      if (typeof value !== "string") {
+        errors.push(`Campo "${field}" debe ser string, recibio ${typeof value}`);
+        continue;
+      }
+
+      if (rule.allowedValues && !rule.allowedValues.includes(value)) {
+        errors.push(
+          `Campo "${field}" debe ser uno de: ${rule.allowedValues.join(", ")}`
+        );
+      }
+      continue;
+    }
+
+    if (rule.type === "number") {
+      if (typeof value !== "number" || Number.isNaN(value)) {
+        errors.push(`Campo "${field}" debe ser number, recibio ${typeof value}`);
+      }
+      continue;
+    }
+
+    if (!Array.isArray(value)) {
+      errors.push(`Campo "${field}" debe ser array, recibio ${typeof value}`);
+      continue;
+    }
+
+    for (let i = 0; i < value.length; i++) {
+      if (typeof value[i] !== "string") {
+        errors.push(`Campo "${field}[${i}]" debe ser string`);
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+export function mergeValidationResults(...results: ValidationResult[]): ValidationResult {
+  const errors = results.flatMap((result) => result.errors);
   return { valid: errors.length === 0, errors };
 }
 

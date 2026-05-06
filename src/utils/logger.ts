@@ -21,7 +21,21 @@ function log(level: LogLevel, message: string, meta?: unknown): void {
   if (levels[level] < levels[currentLevel]) return;
   const prefix = `[${timestamp()}] [${level.toUpperCase()}]`;
   if (meta !== undefined) {
-    console.log(prefix, message, typeof meta === "object" ? JSON.stringify(meta) : meta);
+    if (meta instanceof Error) {
+      console.log(prefix, message, meta.stack ?? meta.message);
+      return;
+    }
+
+    if (typeof meta === "object") {
+      try {
+        console.log(prefix, message, JSON.stringify(meta));
+      } catch {
+        console.log(prefix, message, String(meta));
+      }
+      return;
+    }
+
+    console.log(prefix, message, meta);
   } else {
     console.log(prefix, message);
   }

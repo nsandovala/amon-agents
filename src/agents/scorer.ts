@@ -6,7 +6,11 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import yaml from "js-yaml";
 import { AgentResult, OutputContractYaml, StandardOutput } from "../core/types";
-import { validateOutput } from "../core/validate-json";
+import {
+  mergeValidationResults,
+  validateFields,
+  validateOutput,
+} from "../core/validate-json";
 import { normalizeOutput } from "../core/normalize-output";
 import { callLLM } from "../llm/call-llm";
 import { buildScorerPrompt, ScorerContext } from "../prompts/scorer.prompt";
@@ -23,6 +27,7 @@ function loadOutputContract(): OutputContractYaml {
 export interface ScorerInput {
   taskId: string;
   agentName: string;
+  taskType: string;
   rawOutput: string;
 }
 
@@ -64,7 +69,16 @@ export async function runScorer(input: ScorerInput): Promise<AgentResult<ScorerO
     throw e;
   }
 
-  const validation = validateOutput(output);
+  const validation = mergeValidationResults(
+    validateOutput(output),
+    validateFields(output, {
+      score: { type: "number" },
+      completeness: { type: "number" },
+      quality: { type: "number" },
+      coherence: { type: "number" },
+      reasoning: { type: "string" },
+    })
+  );
   if (!validation.valid) {
     error("[Scorer] Output no cumple el contrato", validation.errors);
   } else {
@@ -72,9 +86,9 @@ export async function runScorer(input: ScorerInput): Promise<AgentResult<ScorerO
   }
 
   const result: AgentResult<ScorerOutput> = {
-    agent: "qa",
+    agent: "ops",
     taskId: input.taskId,
-    taskType: "research_task",
+    taskType: input.taskType as any,
     output,
     rawResponse: raw,
     timestamp: new Date().toISOString(),

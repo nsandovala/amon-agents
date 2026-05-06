@@ -4,10 +4,14 @@
   "description": "Capa ejecutable en TypeScript del sistema de agentes AMON",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "amon": "dist/cli/amon.js"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/core/run-agent.js",
     "dev": "ts-node src/core/run-agent.ts",
+    "amon": "ts-node src/cli/amon.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

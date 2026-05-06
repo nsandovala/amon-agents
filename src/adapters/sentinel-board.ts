@@ -26,7 +26,7 @@ export interface SentinelBoardEntry {
   errors?: string[];
 }
 
-/** Formato nativo que espera POST /api/tasks en Sentinel Board. */
+/** Formato nativo que espera POST /api/tasks en Sentinel Board (legacy). */
 export interface SBTask {
   title: string;
   description: string;
@@ -45,6 +45,59 @@ export interface SBTask {
     validations_passed: boolean;
     errors?: string[];
   };
+}
+
+/**
+ * Payload del nuevo endpoint POST /api/agents/import.
+ * Es el contrato canónico de ingesta desde amon-agents hacia Sentinel Board.
+ */
+export interface SBImportPayload {
+  source: "amon-agents";
+  externalTaskId: string;
+  agent: string;
+  title: string;
+  description: string;
+  priority: "low" | "medium" | "high" | "critical";
+  status:
+    | "idea_bruta"
+    | "clarificando"
+    | "validando"
+    | "en_proceso"
+    | "desarrollo"
+    | "qa"
+    | "listo"
+    | "produccion"
+    | "archivado";
+  type:
+    | "idea"
+    | "feature"
+    | "bug"
+    | "task"
+    | "decision"
+    | "experiment"
+    | "deploy"
+    | "research";
+  tags: string[];
+  metadata: {
+    plan: string[];
+    risks: string[];
+    validations: string[];
+    done_when: string[];
+    files_to_touch: string[];
+    score: number;
+  };
+}
+
+/* ──────────────────── Sanitización ──────────────────── */
+
+function sanitizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string");
+}
+
+function sanitizeScore(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
 /* ──────────────────── Transformaciones ──────────────────── */
@@ -78,8 +131,62 @@ export function serializeForBoard(entry: SentinelBoardEntry): string {
 }
 
 /**
- * Mapea un SentinelBoardEntry al formato nativo que requiere la API de Sentinel Board.
- * Es el contrato de traducción entre el modelo interno de amon-agents y el schema de SB.
+ * Mapea un SentinelBoardEntry al payload del endpoint canónico
+ * POST /api/agents/import de Sentinel Board.
+ */
+export function mapAgentTaskToImportPayload(entry: SentinelBoardEntry): SBImportPayload {
+  const priority: SBImportPayload["priority"] =
+    entry.status === "error"
+      ? "high"
+      : entry.status === "warning"
+        ? "medium"
+        : "low";
+
+  const cardType = mapTaskTypeToCardType(entry.task_type);
+
+  const score = sanitizeScore(entry.details.score);
+
+  return {
+    source: "amon-agents",
+    externalTaskId: entry.task_id,
+    agent: entry.agent,
+    title: `[${entry.agent.toUpperCase()}] ${entry.summary.slice(0, 80)}`,
+    description: entry.summary,
+    priority,
+    status: "idea_bruta",
+    type: cardType,
+    tags: [`task-type:${entry.task_type}`],
+    metadata: {
+      plan: sanitizeStringArray(entry.details.plan),
+      risks: sanitizeStringArray(entry.details.risks),
+      validations: sanitizeStringArray(entry.details.validations),
+      done_when: sanitizeStringArray(entry.details.done_when),
+      files_to_touch: sanitizeStringArray(entry.details.files_to_touch),
+      score,
+    },
+  };
+}
+
+function mapTaskTypeToCardType(taskType: string): SBImportPayload["type"] {
+  switch (taskType) {
+    case "feature_small":
+    case "ui_change":
+      return "feature";
+    case "bugfix":
+      return "bug";
+    case "infra_change":
+    case "security_check":
+      return "task";
+    case "research_task":
+      return "research";
+    default:
+      return "task";
+  }
+}
+
+/**
+ * Mapea un SentinelBoardEntry al formato nativo legacy de POST /api/tasks.
+ * Mantenido sólo por compatibilidad; preferir mapAgentTaskToImportPayload.
  */
 export function mapAgentTaskToSBTask(entry: SentinelBoardEntry): SBTask {
   const statusMap: Record<SentinelBoardEntry["status"], SBTask["status"]> = {
@@ -132,14 +239,24 @@ function isPushEnabled(): boolean {
 
 /* ──────────────────── Push HTTP ──────────────────── */
 
+export interface SendTasksOptions {
+  /**
+   * Fuerza el push aunque AMON_AGENTS_PUSH_TO_SB no esté en "true".
+   * Pensado para el comando explícito `amon push`.
+   */
+  force?: boolean;
+}
+
 /**
  * Envía múltiples tareas a Sentinel Board en requests secuenciales.
- * Respeta AMON_AGENTS_PUSH_TO_SB. Nunca lanza — los errores se loguean y se continúa.
+ * Respeta AMON_AGENTS_PUSH_TO_SB salvo que se pase { force: true }.
+ * Nunca lanza — los errores se loguean y se continúa.
  */
 export async function sendTasksToSentinelBoard(
-  tasks: SentinelBoardEntry[]
+  tasks: SentinelBoardEntry[],
+  options: SendTasksOptions = {}
 ): Promise<void> {
-  if (!isPushEnabled()) {
+  if (!options.force && !isPushEnabled()) {
     info("[SentinelBoard] Push deshabilitado (AMON_AGENTS_PUSH_TO_SB != true). Skipping.");
     return;
   }
@@ -147,7 +264,7 @@ export async function sendTasksToSentinelBoard(
   if (tasks.length === 0) return;
 
   const { baseUrl, token } = getSentinelConfig();
-  const url = `${baseUrl}/api/tasks`;
+  const url = `${baseUrl}/api/agents/import`;
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) {
@@ -159,12 +276,12 @@ export async function sendTasksToSentinelBoard(
   info(`[SentinelBoard] Enviando ${tasks.length} tarea(s) a ${url}`);
 
   for (const entry of tasks) {
-    const sbTask = mapAgentTaskToSBTask(entry);
+    const payload = mapAgentTaskToImportPayload(entry);
     try {
       const res = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify(sbTask),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -173,7 +290,11 @@ export async function sendTasksToSentinelBoard(
         continue;
       }
 
-      info(`[SentinelBoard] Tarea ${entry.task_id} (${entry.agent}) enviada OK.`);
+      const data = (await res.json().catch(() => ({}))) as { taskId?: string };
+      const created = data.taskId ?? "<unknown>";
+      info(
+        `[SentinelBoard] Tarea ${entry.task_id} (${entry.agent}) importada OK → ${created}`
+      );
     } catch (err) {
       warn(
         `[SentinelBoard] Error de red al enviar tarea ${entry.task_id}: ${(err as Error).message}`

@@ -19,3 +19,18 @@ profiles:
     workflows: ["node-ci.yml", "python-ci.yml", "codeql.yml"]
     dependabot: true
     include_common: true
+
+  nextjs-web:
+    workflows: ["nextjs-ci.yml", "codeql.yml"]
+    dependabot: true
+    include_common: true
+
+  nextjs-api-ai:
+    workflows: ["nextjs-ci.yml", "codeql.yml"]
+    dependabot: true
+    include_common: true
+
+  prisma-neon:
+    workflows: ["prisma-ci.yml", "codeql.yml"]"]
+    dependabot: true
+    include_common: true

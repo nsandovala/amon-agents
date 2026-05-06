@@ -6,7 +6,11 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import yaml from "js-yaml";
 import { AgentResult, GlobalRulesYaml, StandardOutput } from "../core/types";
-import { validateOutput } from "../core/validate-json";
+import {
+  mergeValidationResults,
+  validateFields,
+  validateOutput,
+} from "../core/validate-json";
 import { normalizeOutput } from "../core/normalize-output";
 import { callLLM } from "../llm/call-llm";
 import { buildStatePrompt, StateContext } from "../prompts/state.prompt";
@@ -59,7 +63,16 @@ export async function runStateGuardian(input: StateGuardianInput): Promise<Agent
     throw e;
   }
 
-  const validation = validateOutput(output);
+  const validation = mergeValidationResults(
+    validateOutput(output),
+    validateFields(output, {
+      verdict: {
+        type: "string",
+        allowedValues: ["APPROVED", "BLOCKED", "NEEDS_REVIEW"],
+      },
+      violations: { type: "list[string]" },
+    })
+  );
   if (!validation.valid) {
     error("[State-Guardian] Output no cumple el contrato", validation.errors);
   } else {
