@@ -1,9 +1,10 @@
 /**
  * Comando `amon status`.
- * Reporta provider/modelo activos, push enabled, SB API URL y health-check de Ollama.
+ * Reporta provider/modelo activos, push enabled, SB API URL, health-check de Ollama,
+ * ruta del CLI ejecutado y posible conflicto de PATH.
  */
 import { getActiveModel, getActiveProvider } from "../llm/call-llm";
-import { info } from "../utils/logger";
+import { info, warn } from "../utils/logger";
 
 interface StatusReport {
   provider: string;
@@ -11,6 +12,8 @@ interface StatusReport {
   pushEnabled: boolean;
   sbApiUrl: string;
   ollama: { configuredUrl: string; reachable: boolean | "n/a"; detail: string };
+  cliPath: string;
+  pathConflict: boolean;
 }
 
 const HEALTH_TIMEOUT_MS = 3000;
@@ -31,6 +34,16 @@ async function pingOllama(baseUrl: string): Promise<{ reachable: boolean; detail
   } finally {
     clearTimeout(id);
   }
+}
+
+function detectPathConflict(execPath: string): boolean {
+  // If the executable path does NOT reference amon-agents project files,
+  // it's likely the old mini-agentes-cli or another package.
+  return !(
+    execPath.includes("amon-agents") ||
+    execPath.includes("amon.ts") ||
+    execPath.includes("amon.js")
+  );
 }
 
 async function buildReport(): Promise<StatusReport> {
@@ -55,7 +68,10 @@ async function buildReport(): Promise<StatusReport> {
     };
   }
 
-  return { provider, model, pushEnabled, sbApiUrl, ollama };
+  const cliPath = process.argv[1] ?? "(desconocido)";
+  const pathConflict = detectPathConflict(cliPath);
+
+  return { provider, model, pushEnabled, sbApiUrl, ollama, cliPath, pathConflict };
 }
 
 function pad(label: string, width: number): string {
@@ -69,15 +85,30 @@ function formatReachable(value: boolean | "n/a"): string {
 
 function printReport(report: StatusReport): void {
   const lines = [
-    "AMON status",
-    "─────────────────────────────",
-    `${pad("Provider:", 14)}${report.provider}`,
-    `${pad("Model:", 14)}${report.model}`,
-    `${pad("Push to SB:", 14)}${report.pushEnabled ? "enabled" : "disabled"}`,
-    `${pad("SB API URL:", 14)}${report.sbApiUrl}`,
-    `${pad("Ollama URL:", 14)}${report.ollama.configuredUrl}`,
-    `${pad("Ollama:", 14)}${formatReachable(report.ollama.reachable)}  (${report.ollama.detail})`,
+    "",
+    "  AMON CLI · status",
+    "  ─────────────────────────────────",
+    `  ${pad("Provider:", 14)}${report.provider}`,
+    `  ${pad("Model:", 14)}${report.model}`,
+    `  ${pad("Push to SB:", 14)}${report.pushEnabled ? "enabled" : "disabled"}`,
+    `  ${pad("SB API URL:", 14)}${report.sbApiUrl}`,
+    `  ${pad("Ollama URL:", 14)}${report.ollama.configuredUrl}`,
+    `  ${pad("Ollama:", 14)}${formatReachable(report.ollama.reachable)}  (${report.ollama.detail})`,
+    `  ${pad("CLI path:", 14)}${report.cliPath}`,
   ];
+
+  if (report.pathConflict) {
+    lines.push("");
+    lines.push("  ⚠  CONFLICTO DE PATH DETECTADO");
+    lines.push(`     El binario ejecutado (${report.cliPath}) no pertenece a amon-agents.`);
+    lines.push("     Es posible que otro CLI \"amon\" (mini-agentes-cli u otro) tenga prioridad en PATH.");
+    lines.push("     Recomendación: usa \"amon-agents\" como alias seguro, o desinstala el CLI anterior:");
+    lines.push("       npm uninstall -g mini-agentes-cli");
+    lines.push("       npm install -g .   (desde la raíz de amon-agents)");
+  }
+
+  lines.push("");
+
   for (const line of lines) {
     process.stdout.write(line + "\n");
   }
@@ -86,6 +117,11 @@ function printReport(report: StatusReport): void {
 export async function statusCommand(): Promise<number> {
   const report = await buildReport();
   printReport(report);
+
+  if (report.pathConflict) {
+    warn("[amon status] Conflicto de PATH detectado — CLI ejecutado: " + report.cliPath);
+  }
+
   info("[amon status] Reporte emitido.");
   return 0;
 }

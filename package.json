@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "amon": "dist/cli/amon.js"
+    "amon": "dist/cli/amon.js",
+    "amon-agents": "dist/cli/amon.js"
   },
   "scripts": {
     "build": "tsc",

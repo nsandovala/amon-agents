@@ -1,20 +1,49 @@
 /**
  * Comando `amon push`.
- * Lee outputs/sentinel/{taskId}-*-board.json y los envía a Sentinel Board.
+ * Lee outputs/sentinel/{taskId}-unified-board.json y lo envía a Sentinel Board.
+ * Si no existe el archivo unificado, cae al formato legacy ({taskId}-*-board.json).
  * Fuerza el push (bypass de AMON_AGENTS_PUSH_TO_SB) porque el comando es explícito.
  *
  * Uso:
  *   amon push --task TASK-003
  */
-import { readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { SentinelBoardEntry, sendTasksToSentinelBoard } from "../adapters/sentinel-board";
+import {
+  SBUnifiedImportPayload,
+  SentinelBoardEntry,
+  sendTasksToSentinelBoard,
+  sendUnifiedCardToSentinelBoard,
+} from "../adapters/sentinel-board";
 import { error, info, warn } from "../utils/logger";
 import { ParsedArgs } from "../cli/parse-args";
 
 const SENTINEL_DIR = join(process.cwd(), "outputs", "sentinel");
 
-function loadBoardEntries(taskId: string): SentinelBoardEntry[] {
+/**
+ * Intenta cargar el archivo unificado para el taskId dado.
+ * Retorna null si no existe.
+ */
+function loadUnifiedEntry(taskId: string): SBUnifiedImportPayload | null {
+  const filepath = join(SENTINEL_DIR, `${taskId}-unified-board.json`);
+  if (!existsSync(filepath)) return null;
+
+  try {
+    const raw = readFileSync(filepath, "utf8");
+    const parsed = JSON.parse(raw) as SBUnifiedImportPayload;
+    info(`[amon push] Cargado (unified): ${filepath}`);
+    return parsed;
+  } catch (e) {
+    warn(`[amon push] No se pudo parsear ${filepath}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/**
+ * Fallback legacy: carga archivos individuales por agente.
+ * Se mantiene para retrocompatibilidad con outputs anteriores al cambio.
+ */
+function loadLegacyBoardEntries(taskId: string): SentinelBoardEntry[] {
   let files: string[];
   try {
     files = readdirSync(SENTINEL_DIR);
@@ -24,7 +53,7 @@ function loadBoardEntries(taskId: string): SentinelBoardEntry[] {
   }
 
   const matching = files.filter(
-    (f) => f.startsWith(`${taskId}-`) && f.endsWith("-board.json")
+    (f) => f.startsWith(`${taskId}-`) && f.endsWith("-board.json") && !f.includes("-unified-")
   );
 
   const entries: SentinelBoardEntry[] = [];
@@ -34,7 +63,7 @@ function loadBoardEntries(taskId: string): SentinelBoardEntry[] {
       const raw = readFileSync(filepath, "utf8");
       const parsed = JSON.parse(raw) as SentinelBoardEntry;
       entries.push(parsed);
-      info(`[amon push] Cargado: ${filepath}`);
+      info(`[amon push] Cargado (legacy): ${filepath}`);
     } catch (e) {
       warn(`[amon push] No se pudo parsear ${filepath}: ${(e as Error).message}`);
     }
@@ -51,7 +80,17 @@ export async function pushCommand(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  const entries = loadBoardEntries(taskId);
+  // Preferir formato unificado
+  const unified = loadUnifiedEntry(taskId);
+  if (unified) {
+    info("[amon push] Enviando card unificada a Sentinel Board (force=true).");
+    await sendUnifiedCardToSentinelBoard(unified, { force: true });
+    info("[amon push] Push completado.");
+    return 0;
+  }
+
+  // Fallback: formato legacy (múltiples entradas por agente)
+  const entries = loadLegacyBoardEntries(taskId);
   if (entries.length === 0) {
     warn(
       `[amon push] No se encontraron archivos ${taskId}-*-board.json en outputs/sentinel/. Nada que enviar.`
@@ -59,7 +98,7 @@ export async function pushCommand(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  info(`[amon push] Enviando ${entries.length} entrada(s) a Sentinel Board (force=true).`);
+  info(`[amon push] Enviando ${entries.length} entrada(s) legacy a Sentinel Board (force=true).`);
   await sendTasksToSentinelBoard(entries, { force: true });
   info("[amon push] Push completado.");
   return 0;

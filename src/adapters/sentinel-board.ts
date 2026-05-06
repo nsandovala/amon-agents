@@ -1,6 +1,6 @@
 /**
  * Adaptador para Sentinel Board.
- * Transforma AgentResult al formato nativo de la API y lo envía vía POST /api/tasks.
+ * Transforma AgentResult al formato nativo de la API y lo envía vía POST /api/agents/import.
  * Si el push falla, loguea el error pero NO bloquea el pipeline.
  *
  * Variables requeridas en .env.local:
@@ -9,6 +9,8 @@
  *   AMON_AGENTS_PUSH_TO_SB     — "true" para habilitar el push HTTP
  */
 import { AgentResult, StandardOutput } from "../core/types";
+import { StateGuardianOutput } from "../agents/state-guardian";
+import { ScorerOutput } from "../agents/scorer";
 import { info, warn } from "../utils/logger";
 
 /* ──────────────────── Tipos ──────────────────── */
@@ -86,6 +88,86 @@ export interface SBImportPayload {
     files_to_touch: string[];
     score: number;
   };
+}
+
+/* ──────────────────── Unified card types ──────────────────── */
+
+/** Comentario de un agente adjuntado a la card unificada. */
+export interface AgentComment {
+  agent: string;
+  timestamp: string;
+  body: string;
+}
+
+/** Evento de timeline de la ejecución. */
+export interface TimelineEvent {
+  agent: string;
+  timestamp: string;
+  event: string;
+  status: "ok" | "warning" | "error";
+}
+
+/**
+ * Payload unificado para POST /api/agents/import.
+ * Una sola card por ejecución: Planner genera el cuerpo principal,
+ * los demás agentes se pliegan como metadata, checklist, comments, timeline.
+ */
+export interface SBUnifiedImportPayload {
+  source: "amon-agents";
+  externalTaskId: string;
+  agent: "amon-pipeline";
+  title: string;
+  description: string;
+  priority: "low" | "medium" | "high" | "critical";
+  status:
+    | "idea_bruta"
+    | "clarificando"
+    | "validando"
+    | "en_proceso"
+    | "desarrollo"
+    | "qa"
+    | "listo"
+    | "produccion"
+    | "archivado";
+  type:
+    | "idea"
+    | "feature"
+    | "bug"
+    | "task"
+    | "decision"
+    | "experiment"
+    | "deploy"
+    | "research";
+  tags: string[];
+  metadata: {
+    plan: string[];
+    risks: string[];
+    validations: string[];
+    done_when: string[];
+    files_to_touch: string[];
+    score: number;
+    state_guardian?: {
+      verdict: string;
+      violations: string[];
+      valid: boolean;
+    };
+    qa_review?: {
+      goal: string;
+      validations: string[];
+      risks: string[];
+      valid: boolean;
+    };
+    scoring_detail?: {
+      score: number;
+      completeness: number;
+      quality: number;
+      coherence: number;
+      reasoning: string;
+    };
+  };
+  checklist: string[];
+  comments: AgentComment[];
+  timeline: TimelineEvent[];
 }
 
 /* ──────────────────── Sanitización ──────────────────── */
@@ -223,6 +305,164 @@ export function mapAgentTaskToSBTask(entry: SentinelBoardEntry): SBTask {
   };
 }
 
+/* ──────────────────── Unified Card Builder ──────────────────── */
+
+/** Input para construir la card unificada a partir de los resultados de todos los agentes. */
+export interface UnifiedCardInput {
+  plannerResult: AgentResult;
+  stateResult: AgentResult<StateGuardianOutput>;
+  qaResult: AgentResult;
+  scorerResult: AgentResult<ScorerOutput>;
+}
+
+/**
+ * Construye un payload unificado para Sentinel Board.
+ * El Planner define el cuerpo principal de la card.
+ * State-Guardian, QA y Scorer se pliegan como metadata, checklist, comments, timeline.
+ */
+export function buildUnifiedPayload(input: UnifiedCardInput): SBUnifiedImportPayload {
+  const { plannerResult, stateResult, qaResult, scorerResult } = input;
+  const plannerOutput = plannerResult.output;
+  const stateOutput = stateResult.output;
+  const qaOutput = qaResult.output;
+  const scorerOutput = scorerResult.output;
+
+  // ── Priority: worst-case de todos los agentes ──
+  const allValid = [plannerResult, stateResult, qaResult, scorerResult];
+  const hasError = allValid.some((r) => !r.valid);
+  const hasWarning = allValid.some(
+    (r) => r.valid && r.errors && r.errors.length > 0
+  );
+  const priority: SBUnifiedImportPayload["priority"] = hasError
+    ? "high"
+    : hasWarning
+      ? "medium"
+      : "low";
+
+  // ── Status basado en el verdict de State-Guardian ──
+  const statusMap: Record<string, SBUnifiedImportPayload["status"]> = {
+    APPROVED: "validando",
+    NEEDS_REVIEW: "clarificando",
+    BLOCKED: "idea_bruta",
+  };
+  const status = statusMap[stateOutput.verdict] ?? "idea_bruta";
+
+  // ── Checklist: validaciones del QA + done_when del planner ──
+  const checklist: string[] = [
+    ...sanitizeStringArray(plannerOutput.done_when).map((d) => `[done_when] ${d}`),
+    ...sanitizeStringArray(qaOutput.validations).map((v) => `[qa] ${v}`),
+  ];
+
+  // ── State-Guardian violations como checklist items ──
+  if (stateOutput.violations && stateOutput.violations.length > 0) {
+    for (const v of stateOutput.violations) {
+      checklist.push(`[violation] ${v}`);
+    }
+  }
+
+  // ── Comments: resúmenes de cada agente ──
+  const comments: AgentComment[] = [];
+
+  if (stateOutput.goal) {
+    comments.push({
+      agent: "state-guardian",
+      timestamp: stateResult.timestamp,
+      body: `Verdict: ${stateOutput.verdict}. ${stateOutput.goal}`,
+    });
+  }
+
+  if (qaOutput.goal) {
+    comments.push({
+      agent: "qa-reviewer",
+      timestamp: qaResult.timestamp,
+      body: qaOutput.goal,
+    });
+  }
+
+  if (scorerOutput.reasoning) {
+    comments.push({
+      agent: "scorer",
+      timestamp: scorerResult.timestamp,
+      body: `Score: ${scorerOutput.score}/100. ${scorerOutput.reasoning}`,
+    });
+  }
+
+  // ── Timeline ──
+  const timeline: TimelineEvent[] = [
+    {
+      agent: "planner",
+      timestamp: plannerResult.timestamp,
+      event: "Plan generado",
+      status: plannerResult.valid ? "ok" : "error",
+    },
+    {
+      agent: "state-guardian",
+      timestamp: stateResult.timestamp,
+      event: `Evaluación: ${stateOutput.verdict}`,
+      status: stateResult.valid ? (stateOutput.verdict === "BLOCKED" ? "error" : "ok") : "error",
+    },
+    {
+      agent: "qa-reviewer",
+      timestamp: qaResult.timestamp,
+      event: "Revisión QA completada",
+      status: qaResult.valid ? "ok" : "error",
+    },
+    {
+      agent: "scorer",
+      timestamp: scorerResult.timestamp,
+      event: `Score: ${sanitizeScore(scorerOutput.score)}/100`,
+      status: scorerResult.valid ? "ok" : "error",
+    },
+  ];
+
+  const cardType = mapTaskTypeToCardType(plannerResult.taskType);
+
+  return {
+    source: "amon-agents",
+    externalTaskId: plannerResult.taskId,
+    agent: "amon-pipeline",
+    title: `[AMON] ${(plannerOutput.goal || "Sin objetivo").slice(0, 80)}`,
+    description: plannerOutput.goal || "Sin objetivo definido",
+    priority,
+    status,
+    type: cardType,
+    tags: [
+      `task-type:${plannerResult.taskType}`,
+      `score:${sanitizeScore(scorerOutput.score)}`,
+      `verdict:${stateOutput.verdict.toLowerCase()}`,
+    ],
+    metadata: {
+      plan: sanitizeStringArray(plannerOutput.plan),
+      risks: sanitizeStringArray(plannerOutput.risks),
+      validations: sanitizeStringArray(plannerOutput.validations),
+      done_when: sanitizeStringArray(plannerOutput.done_when),
+      files_to_touch: sanitizeStringArray(plannerOutput.files_to_touch),
+      score: sanitizeScore(scorerOutput.score),
+      state_guardian: {
+        verdict: stateOutput.verdict,
+        violations: sanitizeStringArray(stateOutput.violations),
+        valid: stateResult.valid,
+      },
+      qa_review: {
+        goal: qaOutput.goal || "",
+        validations: sanitizeStringArray(qaOutput.validations),
+        risks: sanitizeStringArray(qaOutput.risks),
+        valid: qaResult.valid,
+      },
+      scoring_detail: {
+        score: sanitizeScore(scorerOutput.score),
+        completeness: sanitizeScore(scorerOutput.completeness),
+        quality: sanitizeScore(scorerOutput.quality),
+        coherence: sanitizeScore(scorerOutput.coherence),
+        reasoning: scorerOutput.reasoning || "",
+      },
+    },
+    checklist,
+    comments,
+    timeline,
+  };
+}
+
 /* ──────────────────── Config interna ──────────────────── */
 
 function getSentinelConfig(): { baseUrl: string; token: string } {
@@ -309,4 +549,55 @@ export async function sendTasksToSentinelBoard(
  */
 export async function pushToSentinelBoard(entry: SentinelBoardEntry): Promise<void> {
   return sendTasksToSentinelBoard([entry]);
+}
+
+/**
+ * Envía una card unificada a Sentinel Board vía POST /api/agents/import.
+ * El payload contiene toda la información de la ejecución consolidada.
+ * Respeta AMON_AGENTS_PUSH_TO_SB salvo que se pase { force: true }.
+ */
+export async function sendUnifiedCardToSentinelBoard(
+  payload: SBUnifiedImportPayload,
+  options: SendTasksOptions = {}
+): Promise<void> {
+  if (!options.force && !isPushEnabled()) {
+    info("[SentinelBoard] Push deshabilitado (AMON_AGENTS_PUSH_TO_SB != true). Skipping.");
+    return;
+  }
+
+  const { baseUrl, token } = getSentinelConfig();
+  const url = `${baseUrl}/api/agents/import`;
+
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  } else {
+    warn("[SentinelBoard] SENTINEL_BOARD_AGENT_TOKEN no configurado. Enviando sin autenticación.");
+  }
+
+  info(`[SentinelBoard] Enviando card unificada para ${payload.externalTaskId} a ${url}`);
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "<unreadable body>");
+      warn(`[SentinelBoard] HTTP ${res.status} — tarea ${payload.externalTaskId}: ${body}`);
+      return;
+    }
+
+    const data = (await res.json().catch(() => ({}))) as { taskId?: string };
+    const created = data.taskId ?? "<unknown>";
+    info(
+      `[SentinelBoard] Card unificada ${payload.externalTaskId} importada OK → ${created}`
+    );
+  } catch (err) {
+    warn(
+      `[SentinelBoard] Error de red al enviar card ${payload.externalTaskId}: ${(err as Error).message}`
+    );
+  }
 }

@@ -1,7 +1,8 @@
 /**
  * Comando `amon run`.
  * Ejecuta el pipeline planner → state-guardian → qa-reviewer → scorer,
- * persiste outputs locales y, si AMON_AGENTS_PUSH_TO_SB=true, los envía a Sentinel Board.
+ * persiste outputs locales y, si AMON_AGENTS_PUSH_TO_SB=true, envía UNA card
+ * unificada a Sentinel Board.
  *
  * Uso:
  *   amon run "descripción de la tarea"
@@ -13,11 +14,11 @@ import { runPlanner } from "../agents/planner";
 import { runQaReviewer } from "../agents/qa-reviewer";
 import { runScorer } from "../agents/scorer";
 import { runStateGuardian } from "../agents/state-guardian";
+import { StateGuardianOutput } from "../agents/state-guardian";
+import { ScorerOutput } from "../agents/scorer";
 import {
-  SentinelBoardEntry,
-  adaptToSentinelBoard,
-  sendTasksToSentinelBoard,
-  serializeForBoard,
+  buildUnifiedPayload,
+  sendUnifiedCardToSentinelBoard,
 } from "../adapters/sentinel-board";
 import { AgentResult, TaskType } from "../core/types";
 import { getOutputPathForTaskType, listTaskTypes } from "../llm/router";
@@ -61,8 +62,7 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
 
   info(`[amon run] Iniciando flujo para tarea ${taskId} de tipo ${taskType}`);
 
-  const boardEntries: SentinelBoardEntry[] = [];
-
+  // ── 1. Planner ──
   const plannerResult = await runPlanner({
     taskId,
     taskType,
@@ -70,13 +70,14 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
     repo,
     playbook,
   });
-  boardEntries.push(saveResult(plannerResult));
+  saveLocalResult(plannerResult);
 
+  // ── 2. State-Guardian ──
   const stateResult = await runStateGuardian({
     taskId,
     proposedChanges: JSON.stringify(plannerResult.output, null, 2),
   });
-  boardEntries.push(saveResult(stateResult));
+  saveLocalResult(stateResult);
 
   if (!stateResult.valid) {
     error("[amon run] State-Guardian devolvió una salida inválida", stateResult.errors);
@@ -88,28 +89,50 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
+  // ── 3. QA-Reviewer ──
   const qaResult = await runQaReviewer({
     taskId,
     taskType,
     plan: JSON.stringify(plannerResult.output, null, 2),
   });
-  boardEntries.push(saveResult(qaResult));
+  saveLocalResult(qaResult);
 
+  // ── 4. Scorer ──
   const scorerResult = await runScorer({
     taskId,
     agentName: "planner",
     taskType,
     rawOutput: JSON.stringify(plannerResult.output, null, 2),
   });
-  boardEntries.push(saveResult(scorerResult));
+  saveLocalResult(scorerResult);
 
-  await sendTasksToSentinelBoard(boardEntries);
+  // ── 5. Card unificada → Sentinel Board ──
+  const unifiedPayload = buildUnifiedPayload({
+    plannerResult,
+    stateResult,
+    qaResult,
+    scorerResult: scorerResult as AgentResult<ScorerOutput>,
+  });
+
+  // Guardar card unificada localmente
+  const boardDir = join(process.cwd(), "outputs", "sentinel");
+  mkdirSync(boardDir, { recursive: true });
+  const boardFile = join(boardDir, `${taskId}-unified-board.json`);
+  writeFileSync(boardFile, JSON.stringify(unifiedPayload, null, 2), "utf8");
+  info(`[amon run] Sentinel Board local (unified): ${boardFile}`);
+
+  // Push a Sentinel Board (1 sola card)
+  await sendUnifiedCardToSentinelBoard(unifiedPayload);
 
   info(`[amon run] Flujo completado. Task: ${taskId}. Outputs locales generados.`);
   return 0;
 }
 
-function saveResult(result: AgentResult): SentinelBoardEntry {
+/**
+ * Guarda el resultado de un agente en disco (output local por agente).
+ * No genera SentinelBoardEntry individual — la card única se construye al final.
+ */
+function saveLocalResult(result: AgentResult): void {
   const outputPath = getOutputPathForTaskType(result.taskType);
   const dir = join(process.cwd(), outputPath);
   mkdirSync(dir, { recursive: true });
@@ -118,13 +141,4 @@ function saveResult(result: AgentResult): SentinelBoardEntry {
   const filepath = join(dir, filename);
   writeFileSync(filepath, JSON.stringify(result, null, 2), "utf8");
   info(`[amon run] Guardado: ${filepath}`);
-
-  const boardEntry = adaptToSentinelBoard(result);
-  const boardDir = join(process.cwd(), "outputs", "sentinel");
-  mkdirSync(boardDir, { recursive: true });
-  const boardFile = join(boardDir, `${result.taskId}-${result.agent}-board.json`);
-  writeFileSync(boardFile, serializeForBoard(boardEntry), "utf8");
-  info(`[amon run] Sentinel Board local: ${boardFile}`);
-
-  return boardEntry;
 }

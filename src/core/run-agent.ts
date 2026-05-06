@@ -14,11 +14,10 @@ import { runPlanner } from "../agents/planner";
 import { runQaReviewer } from "../agents/qa-reviewer";
 import { runScorer } from "../agents/scorer";
 import { runStateGuardian } from "../agents/state-guardian";
+import { ScorerOutput } from "../agents/scorer";
 import {
-  SentinelBoardEntry,
-  adaptToSentinelBoard,
-  sendTasksToSentinelBoard,
-  serializeForBoard,
+  buildUnifiedPayload,
+  sendUnifiedCardToSentinelBoard,
 } from "../adapters/sentinel-board";
 import { AgentResult, TaskType } from "../core/types";
 import { getOutputPathForTaskType, listTaskTypes } from "../llm/router";
@@ -34,7 +33,6 @@ async function main(): Promise<void> {
   }
 
   const [taskId, taskType, description, repo, playbook] = args;
-  const boardEntries: SentinelBoardEntry[] = [];
   const availableTaskTypes = listTaskTypes();
 
   if (!availableTaskTypes.includes(taskType as TaskType)) {
@@ -45,14 +43,16 @@ async function main(): Promise<void> {
 
   info(`[RunAgent] Iniciando flujo para tarea ${taskId} de tipo ${taskType}`);
 
+  // ── 1. Planner ──
   const plannerResult = await runPlanner({ taskId, taskType, description, repo, playbook });
-  boardEntries.push(await saveResult(plannerResult));
+  saveLocalResult(plannerResult);
 
+  // ── 2. State-Guardian ──
   const stateResult = await runStateGuardian({
     taskId,
     proposedChanges: JSON.stringify(plannerResult.output, null, 2),
   });
-  boardEntries.push(await saveResult(stateResult));
+  saveLocalResult(stateResult);
 
   if (!stateResult.valid) {
     error("[RunAgent] State-Guardian devolvio una salida invalida", stateResult.errors);
@@ -64,27 +64,49 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // ── 3. QA-Reviewer ──
   const qaResult = await runQaReviewer({
     taskId,
     taskType,
     plan: JSON.stringify(plannerResult.output, null, 2),
   });
-  boardEntries.push(await saveResult(qaResult));
+  saveLocalResult(qaResult);
 
+  // ── 4. Scorer ──
   const scorerResult = await runScorer({
     taskId,
     agentName: "planner",
     taskType,
     rawOutput: JSON.stringify(plannerResult.output, null, 2),
   });
-  boardEntries.push(await saveResult(scorerResult));
+  saveLocalResult(scorerResult);
 
-  await sendTasksToSentinelBoard(boardEntries);
+  // ── 5. Card unificada → Sentinel Board ──
+  const unifiedPayload = buildUnifiedPayload({
+    plannerResult,
+    stateResult,
+    qaResult,
+    scorerResult: scorerResult as AgentResult<ScorerOutput>,
+  });
+
+  // Guardar card unificada localmente
+  const boardDir = join(process.cwd(), "outputs", "sentinel");
+  mkdirSync(boardDir, { recursive: true });
+  const boardFile = join(boardDir, `${taskId}-unified-board.json`);
+  writeFileSync(boardFile, JSON.stringify(unifiedPayload, null, 2), "utf8");
+  info(`[RunAgent] Sentinel Board local (unified): ${boardFile}`);
+
+  // Push a Sentinel Board (1 sola card)
+  await sendUnifiedCardToSentinelBoard(unifiedPayload);
 
   info("[RunAgent] Flujo completado. Revisa los outputs generados.");
 }
 
-async function saveResult(result: AgentResult): Promise<SentinelBoardEntry> {
+/**
+ * Guarda el resultado de un agente en disco (output local por agente).
+ * No genera SentinelBoardEntry individual — la card única se construye al final.
+ */
+function saveLocalResult(result: AgentResult): void {
   const outputPath = getOutputPathForTaskType(result.taskType);
   const dir = join(process.cwd(), outputPath);
   mkdirSync(dir, { recursive: true });
@@ -93,15 +115,6 @@ async function saveResult(result: AgentResult): Promise<SentinelBoardEntry> {
   const filepath = join(dir, filename);
   writeFileSync(filepath, JSON.stringify(result, null, 2), "utf8");
   info(`[RunAgent] Guardado: ${filepath}`);
-
-  const boardEntry = adaptToSentinelBoard(result);
-  const boardDir = join(process.cwd(), "outputs", "sentinel");
-  mkdirSync(boardDir, { recursive: true });
-  const boardFile = join(boardDir, `${result.taskId}-${result.agent}-board.json`);
-  writeFileSync(boardFile, serializeForBoard(boardEntry), "utf8");
-  info(`[RunAgent] Sentinel Board local: ${boardFile}`);
-
-  return boardEntry;
 }
 
 main().catch((e) => {
