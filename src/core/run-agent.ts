@@ -20,6 +20,11 @@ import {
   sendUnifiedCardToSentinelBoard,
 } from "../adapters/sentinel-board";
 import { AgentResult, TaskType } from "../core/types";
+import {
+  emitAmonEvent,
+  newRunId,
+  withAgentEvents,
+} from "../events/event-emitter";
 import { getOutputPathForTaskType, listTaskTypes } from "../llm/router";
 import { error, info, setLevel } from "../utils/logger";
 
@@ -41,44 +46,84 @@ async function main(): Promise<void> {
     );
   }
 
+  const runId = newRunId();
   info(`[RunAgent] Iniciando flujo para tarea ${taskId} de tipo ${taskType}`);
+  await emitAmonEvent({
+    runId,
+    taskId,
+    type: "run.started",
+    level: "info",
+    message: `Pipeline iniciado para ${taskId}`,
+    payload: { taskType, hasRepo: !!repo, hasPlaybook: !!playbook },
+  });
 
   // ── 1. Planner ──
-  const plannerResult = await runPlanner({ taskId, taskType, description, repo, playbook });
+  const plannerResult = await withAgentEvents(
+    { runId, taskId, agent: "planner" },
+    () => runPlanner({ taskId, taskType, description, repo, playbook })
+  );
   saveLocalResult(plannerResult);
 
   // ── 2. State-Guardian ──
-  const stateResult = await runStateGuardian({
-    taskId,
-    proposedChanges: JSON.stringify(plannerResult.output, null, 2),
-  });
+  const stateResult = await withAgentEvents(
+    { runId, taskId, agent: "state-guardian" },
+    () =>
+      runStateGuardian({
+        taskId,
+        proposedChanges: JSON.stringify(plannerResult.output, null, 2),
+      })
+  );
   saveLocalResult(stateResult);
 
   if (!stateResult.valid) {
     error("[RunAgent] State-Guardian devolvio una salida invalida", stateResult.errors);
+    await emitAmonEvent({
+      runId,
+      taskId,
+      type: "run.done",
+      level: "error",
+      message: "Pipeline abortado: State-Guardian invalido",
+      payload: { reason: "state_guardian_invalid", errors: stateResult.errors ?? [] },
+    });
     process.exit(1);
   }
 
   if (stateResult.output.verdict === "BLOCKED") {
     error("[RunAgent] State-Guardian bloqueo el cambio por violaciones de reglas globales.");
+    await emitAmonEvent({
+      runId,
+      taskId,
+      type: "run.done",
+      level: "error",
+      message: "Pipeline abortado: BLOCKED por State-Guardian",
+      payload: { reason: "state_guardian_blocked" },
+    });
     process.exit(1);
   }
 
   // ── 3. QA-Reviewer ──
-  const qaResult = await runQaReviewer({
-    taskId,
-    taskType,
-    plan: JSON.stringify(plannerResult.output, null, 2),
-  });
+  const qaResult = await withAgentEvents(
+    { runId, taskId, agent: "qa-reviewer" },
+    () =>
+      runQaReviewer({
+        taskId,
+        taskType,
+        plan: JSON.stringify(plannerResult.output, null, 2),
+      })
+  );
   saveLocalResult(qaResult);
 
   // ── 4. Scorer ──
-  const scorerResult = await runScorer({
-    taskId,
-    agentName: "planner",
-    taskType,
-    rawOutput: JSON.stringify(plannerResult.output, null, 2),
-  });
+  const scorerResult = await withAgentEvents(
+    { runId, taskId, agent: "scorer" },
+    () =>
+      runScorer({
+        taskId,
+        agentName: "planner",
+        taskType,
+        rawOutput: JSON.stringify(plannerResult.output, null, 2),
+      })
+  );
   saveLocalResult(scorerResult);
 
   // ── 5. Card unificada → Sentinel Board ──
@@ -97,9 +142,20 @@ async function main(): Promise<void> {
   info(`[RunAgent] Sentinel Board local (unified): ${boardFile}`);
 
   // Push a Sentinel Board (1 sola card)
-  await sendUnifiedCardToSentinelBoard(unifiedPayload);
+  await sendUnifiedCardToSentinelBoard(unifiedPayload, { runId });
 
   info("[RunAgent] Flujo completado. Revisa los outputs generados.");
+  await emitAmonEvent({
+    runId,
+    taskId,
+    type: "run.done",
+    level: "info",
+    message: `Pipeline completado para ${taskId}`,
+    payload: {
+      score: (scorerResult.output as ScorerOutput)?.score,
+      verdict: stateResult.output.verdict,
+    },
+  });
 }
 
 /**

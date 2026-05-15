@@ -112,46 +112,81 @@ Descripción detallada de la tarea...
 
 ---
 
-## Fase 6: Event Stream
+## Fase 6: Event Stream Bridge
 
-**Estado:** Planeada.
+**Estado:** En progreso — bridge local-first entregado (2026-05-14). Faltan transporte hacia SB y SSE/WebSocket.
 
 **Origen:** Patrón validado en `cortex-heo-lab` (Python event emitter).
 
 **Objetivo:** Emitir eventos tipados durante la ejecución del pipeline para consumo en tiempo real por extensiones, dashboards o logs estructurados.
 
-**Entregables:**
-- [ ] `EventEmitter` tipado en TypeScript (`src/core/event-stream.ts`).
-- [ ] Eventos por fase: `pipeline:start`, `agent:start`, `agent:done`, `agent:error`, `pipeline:done`.
-- [ ] Payload de cada evento con `taskId`, `agent`, `timestamp`, `status`, `data`.
-- [ ] Hook en `run-agent.ts` y `run.ts` para emitir eventos en cada paso.
-- [ ] Writer de eventos a `stdout` (modo `--stream`) para consumo por pipes.
-- [ ] Writer de eventos a archivo (`outputs/events/{taskId}.ndjson`).
-- [ ] Interfaz `EventSink` para que extensiones futuras se suscriban.
+### 6.1 — Local-first emitter ✅
 
-**Ejemplo de evento:**
+**Entregado.**
+
+- [x] Tipos `AmonEvent`, `AmonEventType`, `AmonEventLevel`, `AmonEventAgent` en `src/events/types.ts`.
+- [x] Emitter append-only en `src/events/event-emitter.ts` con sanitización de secretos y comportamiento fail-soft.
+- [x] Hook `withAgentEvents` para envolver agentes con eventos `agent.started` / `agent.done` / `agent.error`.
+- [x] Eventos `sb.push.started` / `sb.push.done` / `sb.push.error` en `adapters/sentinel-board.ts`.
+- [x] Eventos `run.started` / `run.done` en `commands/run.ts` y `core/run-agent.ts`.
+- [x] Writer NDJSON a `~/.amon/events.jsonl` (override `AMON_EVENTS_PATH`).
+- [x] Opt-out vía `AMON_EVENTS_ENABLED=false`.
+
+### 6.2 — Pendiente
+
+- [ ] Eventos finos `agent.thinking` y `agent.output` desde dentro de cada agente (LLM streaming).
+- [ ] Evento `tool.used` desde adapters de tools (cuando se introduzcan).
+- [ ] Writer de eventos a `stdout` (modo `--stream`) para consumo por pipes.
+- [ ] Interfaz `EventSink` para que extensiones futuras se suscriban.
+- [ ] Bridge HTTP/SSE hacia Sentinel Board (Fase 6.3).
+
+**Ejemplo de evento (formato actual):**
 
 ```json
 {
-  "event": "agent:done",
-  "taskId": "TASK-005",
+  "id": "5b24a4e6-2a2a-4f4f-bd1c-9c8a5d12e3f0",
+  "ts": "2026-05-14T18:30:00.123Z",
+  "runId": "f1e2d3c4-5b6a-4789-9abc-deadbeef0001",
+  "taskId": "AMON-20260514183000",
   "agent": "planner",
-  "timestamp": "2026-05-06T18:30:00.000Z",
-  "status": "ok",
-  "data": {
-    "valid": true,
-    "outputFields": ["goal", "plan", "risks", "files_to_touch"],
-    "durationMs": 4200
-  }
+  "type": "agent.done",
+  "level": "info",
+  "message": "planner completado",
+  "payload": { "valid": true, "errors": [] }
 }
 ```
 
 **Reglas:**
-- El event stream es **opt-in** — no afecta el flujo normal.
+- El event stream es **opt-in al consumo** — no afecta el flujo normal.
+- Append-only. Sin rotación ni overwrite. La gestión del archivo es del operador.
+- Sanitización obligatoria: ningún token, secret o API key debe escribirse en disco.
 - Implementación nativa en TypeScript. No se porta código Python de cortex-heo-lab.
 - Compatible con el patrón de `EventSink` para la Fase 7.
+- **Schema neutral.** El Event Stream NO se diseña sólo para Sentinel Board. Los campos `source`, `consumer`, `context`, `projectSlug`, `workspaceSlug` permiten que consumidores futuros (ver "Multi-consumer roadmap" abajo) se enganchen sin modificar el emitter.
 
-**Beneficio:** Observabilidad del pipeline. Base para la extensión VSCode.
+**Beneficio:** Observabilidad del pipeline. Base para la extensión VSCode y para el bridge hacia SB.
+
+---
+
+## Multi-consumer roadmap
+
+> **Estado:** Diseño preparado, ningún consumer adicional implementado.
+
+AMON Agents está pensado como **runtime reutilizable**. SB es el primer consumidor operativo; otros se conectarán como adapters aislados sin modificar el core.
+
+| Consumer | Estado | Rol esperado | Cuándo |
+|----------|--------|--------------|--------|
+| Sentinel Board | ✅ Operativo | Backlog / kanban / dashboard | Hoy |
+| Liev | 🔭 Planeado | Asistente personal: tareas, recordatorios, notas, salud, mascota, pagos | Sin fecha — depende de definición de schema de Liev |
+| IndesPro | 🔭 Planeado | Motor B2B: auditorías, generación de backlog, QA, documentación, automatización para clientes | Sin fecha — depende de pipeline comercial de IndesPro |
+
+**Reglas hasta entonces:**
+1. **No** crear carpetas `liev/` o `indespro/` en este repo.
+2. **No** introducir lógica comercial específica (clientes, facturación, workspaces) en el core.
+3. **Sí** mantener el Event Stream y los outputs locales como API estable: cualquier futuro consumer debería poder funcionar leyendo `~/.amon/events.jsonl` y los archivos de `outputs/`.
+4. Cuando un nuevo consumer se materialice: nuevo adapter en `src/adapters/<consumer>.ts`, etiquetando sus eventos con `consumer: "<nombre>"`. Cero cambios al core.
+
+Ver `docs/ARCHITECTURE.md` § "AMON Agents como runtime reutilizable" para los detalles de schema neutral.
 
 ---
 

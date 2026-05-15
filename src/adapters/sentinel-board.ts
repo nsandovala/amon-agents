@@ -8,9 +8,11 @@
  *   SENTINEL_BOARD_AGENT_TOKEN — Bearer token de autenticación
  *   AMON_AGENTS_PUSH_TO_SB     — "true" para habilitar el push HTTP
  */
+import { randomUUID } from "crypto";
 import { AgentResult, StandardOutput } from "../core/types";
 import { StateGuardianOutput } from "../agents/state-guardian";
 import { ScorerOutput } from "../agents/scorer";
+import { emitAmonEvent } from "../events/event-emitter";
 import { info, warn } from "../utils/logger";
 
 /* ──────────────────── Tipos ──────────────────── */
@@ -485,6 +487,12 @@ export interface SendTasksOptions {
    * Pensado para el comando explícito `amon push`.
    */
   force?: boolean;
+  /**
+   * Identificador de la ejecución que originó el push.
+   * Usado por el event emitter para correlacionar eventos `sb.push.*`
+   * con el resto del pipeline. Si no se provee, se genera uno local.
+   */
+  runId?: string;
 }
 
 /**
@@ -503,6 +511,7 @@ export async function sendTasksToSentinelBoard(
 
   if (tasks.length === 0) return;
 
+  const runId = options.runId ?? randomUUID();
   const { baseUrl, token } = getSentinelConfig();
   const url = `${baseUrl}/api/agents/import`;
 
@@ -517,6 +526,17 @@ export async function sendTasksToSentinelBoard(
 
   for (const entry of tasks) {
     const payload = mapAgentTaskToImportPayload(entry);
+    await emitAmonEvent({
+      runId,
+      taskId: entry.task_id,
+      agent: "sentinel-board",
+      consumer: "sentinel-board",
+      type: "sb.push.started",
+      level: "info",
+      message: `Push iniciado para ${entry.task_id} (${entry.agent})`,
+      payload: { url, force: !!options.force },
+    });
+
     try {
       const res = await fetch(url, {
         method: "POST",
@@ -527,6 +547,16 @@ export async function sendTasksToSentinelBoard(
       if (!res.ok) {
         const body = await res.text().catch(() => "<unreadable body>");
         warn(`[SentinelBoard] HTTP ${res.status} — tarea ${entry.task_id}: ${body}`);
+        await emitAmonEvent({
+          runId,
+          taskId: entry.task_id,
+          agent: "sentinel-board",
+          consumer: "sentinel-board",
+          type: "sb.push.error",
+          level: "error",
+          message: `HTTP ${res.status} al pushear ${entry.task_id}`,
+          payload: { status: res.status, body: body.slice(0, 1024) },
+        });
         continue;
       }
 
@@ -535,10 +565,29 @@ export async function sendTasksToSentinelBoard(
       info(
         `[SentinelBoard] Tarea ${entry.task_id} (${entry.agent}) importada OK → ${created}`
       );
+      await emitAmonEvent({
+        runId,
+        taskId: entry.task_id,
+        agent: "sentinel-board",
+        consumer: "sentinel-board",
+        type: "sb.push.done",
+        level: "info",
+        message: `Tarea ${entry.task_id} importada OK`,
+        payload: { sbTaskId: created, agent: entry.agent },
+      });
     } catch (err) {
-      warn(
-        `[SentinelBoard] Error de red al enviar tarea ${entry.task_id}: ${(err as Error).message}`
-      );
+      const message = (err as Error).message;
+      warn(`[SentinelBoard] Error de red al enviar tarea ${entry.task_id}: ${message}`);
+      await emitAmonEvent({
+        runId,
+        taskId: entry.task_id,
+        agent: "sentinel-board",
+        consumer: "sentinel-board",
+        type: "sb.push.error",
+        level: "error",
+        message: `Error de red: ${message}`,
+        payload: { name: (err as Error).name },
+      });
     }
   }
 }
@@ -560,6 +609,9 @@ export async function sendUnifiedCardToSentinelBoard(
   payload: SBUnifiedImportPayload,
   options: SendTasksOptions = {}
 ): Promise<void> {
+  const runId = options.runId ?? randomUUID();
+  const taskId = payload.externalTaskId;
+
   if (!options.force && !isPushEnabled()) {
     info("[SentinelBoard] Push deshabilitado (AMON_AGENTS_PUSH_TO_SB != true). Skipping.");
     return;
@@ -575,7 +627,18 @@ export async function sendUnifiedCardToSentinelBoard(
     warn("[SentinelBoard] SENTINEL_BOARD_AGENT_TOKEN no configurado. Enviando sin autenticación.");
   }
 
-  info(`[SentinelBoard] Enviando card unificada para ${payload.externalTaskId} a ${url}`);
+  info(`[SentinelBoard] Enviando card unificada para ${taskId} a ${url}`);
+
+  await emitAmonEvent({
+    runId,
+    taskId,
+    agent: "sentinel-board",
+    consumer: "sentinel-board",
+    type: "sb.push.started",
+    level: "info",
+    message: `Push unificado iniciado para ${taskId}`,
+    payload: { url, force: !!options.force },
+  });
 
   try {
     const res = await fetch(url, {
@@ -586,18 +649,47 @@ export async function sendUnifiedCardToSentinelBoard(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "<unreadable body>");
-      warn(`[SentinelBoard] HTTP ${res.status} — tarea ${payload.externalTaskId}: ${body}`);
+      warn(`[SentinelBoard] HTTP ${res.status} — tarea ${taskId}: ${body}`);
+      await emitAmonEvent({
+        runId,
+        taskId,
+        agent: "sentinel-board",
+        consumer: "sentinel-board",
+        type: "sb.push.error",
+        level: "error",
+        message: `HTTP ${res.status} al pushear ${taskId}`,
+        payload: { status: res.status, body: body.slice(0, 1024) },
+      });
       return;
     }
 
     const data = (await res.json().catch(() => ({}))) as { taskId?: string };
     const created = data.taskId ?? "<unknown>";
     info(
-      `[SentinelBoard] Card unificada ${payload.externalTaskId} importada OK → ${created}`
+      `[SentinelBoard] Card unificada ${taskId} importada OK → ${created}`
     );
+    await emitAmonEvent({
+      runId,
+      taskId,
+      agent: "sentinel-board",
+      consumer: "sentinel-board",
+      type: "sb.push.done",
+      level: "info",
+      message: `Card unificada ${taskId} importada OK`,
+      payload: { sbTaskId: created },
+    });
   } catch (err) {
-    warn(
-      `[SentinelBoard] Error de red al enviar card ${payload.externalTaskId}: ${(err as Error).message}`
-    );
+    const message = (err as Error).message;
+    warn(`[SentinelBoard] Error de red al enviar card ${taskId}: ${message}`);
+    await emitAmonEvent({
+      runId,
+      taskId,
+      agent: "sentinel-board",
+      consumer: "sentinel-board",
+      type: "sb.push.error",
+      level: "error",
+      message: `Error de red: ${message}`,
+      payload: { name: (err as Error).name },
+    });
   }
 }

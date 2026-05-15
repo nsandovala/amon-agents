@@ -14,13 +14,17 @@ import { runPlanner } from "../agents/planner";
 import { runQaReviewer } from "../agents/qa-reviewer";
 import { runScorer } from "../agents/scorer";
 import { runStateGuardian } from "../agents/state-guardian";
-import { StateGuardianOutput } from "../agents/state-guardian";
 import { ScorerOutput } from "../agents/scorer";
 import {
   buildUnifiedPayload,
   sendUnifiedCardToSentinelBoard,
 } from "../adapters/sentinel-board";
 import { AgentResult, TaskType } from "../core/types";
+import {
+  emitAmonEvent,
+  newRunId,
+  withAgentEvents,
+} from "../events/event-emitter";
 import { getOutputPathForTaskType, listTaskTypes } from "../llm/router";
 import { error, info } from "../utils/logger";
 import { ParsedArgs } from "../cli/parse-args";
@@ -60,50 +64,84 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
+  const runId = newRunId();
   info(`[amon run] Iniciando flujo para tarea ${taskId} de tipo ${taskType}`);
+  await emitAmonEvent({
+    runId,
+    taskId,
+    type: "run.started",
+    level: "info",
+    message: `Pipeline iniciado para ${taskId}`,
+    payload: { taskType, hasRepo: !!repo, hasPlaybook: !!playbook },
+  });
 
   // ── 1. Planner ──
-  const plannerResult = await runPlanner({
-    taskId,
-    taskType,
-    description,
-    repo,
-    playbook,
-  });
+  const plannerResult = await withAgentEvents(
+    { runId, taskId, agent: "planner" },
+    () => runPlanner({ taskId, taskType, description, repo, playbook })
+  );
   saveLocalResult(plannerResult);
 
   // ── 2. State-Guardian ──
-  const stateResult = await runStateGuardian({
-    taskId,
-    proposedChanges: JSON.stringify(plannerResult.output, null, 2),
-  });
+  const stateResult = await withAgentEvents(
+    { runId, taskId, agent: "state-guardian" },
+    () =>
+      runStateGuardian({
+        taskId,
+        proposedChanges: JSON.stringify(plannerResult.output, null, 2),
+      })
+  );
   saveLocalResult(stateResult);
 
   if (!stateResult.valid) {
     error("[amon run] State-Guardian devolvió una salida inválida", stateResult.errors);
+    await emitAmonEvent({
+      runId,
+      taskId,
+      type: "run.done",
+      level: "error",
+      message: "Pipeline abortado: State-Guardian inválido",
+      payload: { reason: "state_guardian_invalid", errors: stateResult.errors ?? [] },
+    });
     return 1;
   }
 
   if (stateResult.output.verdict === "BLOCKED") {
     error("[amon run] State-Guardian bloqueó el cambio por violaciones de reglas globales.");
+    await emitAmonEvent({
+      runId,
+      taskId,
+      type: "run.done",
+      level: "error",
+      message: "Pipeline abortado: BLOCKED por State-Guardian",
+      payload: { reason: "state_guardian_blocked" },
+    });
     return 1;
   }
 
   // ── 3. QA-Reviewer ──
-  const qaResult = await runQaReviewer({
-    taskId,
-    taskType,
-    plan: JSON.stringify(plannerResult.output, null, 2),
-  });
+  const qaResult = await withAgentEvents(
+    { runId, taskId, agent: "qa-reviewer" },
+    () =>
+      runQaReviewer({
+        taskId,
+        taskType,
+        plan: JSON.stringify(plannerResult.output, null, 2),
+      })
+  );
   saveLocalResult(qaResult);
 
   // ── 4. Scorer ──
-  const scorerResult = await runScorer({
-    taskId,
-    agentName: "planner",
-    taskType,
-    rawOutput: JSON.stringify(plannerResult.output, null, 2),
-  });
+  const scorerResult = await withAgentEvents(
+    { runId, taskId, agent: "scorer" },
+    () =>
+      runScorer({
+        taskId,
+        agentName: "planner",
+        taskType,
+        rawOutput: JSON.stringify(plannerResult.output, null, 2),
+      })
+  );
   saveLocalResult(scorerResult);
 
   // ── 5. Card unificada → Sentinel Board ──
@@ -122,9 +160,20 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
   info(`[amon run] Sentinel Board local (unified): ${boardFile}`);
 
   // Push a Sentinel Board (1 sola card)
-  await sendUnifiedCardToSentinelBoard(unifiedPayload);
+  await sendUnifiedCardToSentinelBoard(unifiedPayload, { runId });
 
   info(`[amon run] Flujo completado. Task: ${taskId}. Outputs locales generados.`);
+  await emitAmonEvent({
+    runId,
+    taskId,
+    type: "run.done",
+    level: "info",
+    message: `Pipeline completado para ${taskId}`,
+    payload: {
+      score: (scorerResult.output as ScorerOutput)?.score,
+      verdict: stateResult.output.verdict,
+    },
+  });
   return 0;
 }
 

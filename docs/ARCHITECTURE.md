@@ -92,6 +92,73 @@ Aplicación Next.js — dashboard de gestión. Recibe cards desde AMON y las per
 
 Base de datos serverless donde SB almacena cards, usuarios y metadata. **Fuente única de verdad.**
 
+### 8. Event Stream Bridge (local-first)
+
+Capa de observabilidad append-only que escribe eventos NDJSON a disco durante la ejecución del pipeline. **No** se conecta todavía con Sentinel Board y **no** expone WebSocket/SSE — esa es una fase posterior.
+
+- `src/events/types.ts` — `AmonEvent`, `AmonEventType`, `AmonEventLevel`, `AmonEventAgent`.
+- `src/events/event-emitter.ts` — `emitAmonEvent`, `withAgentEvents`, `newRunId`.
+
+Path por defecto: `~/.amon/events.jsonl` (override con `AMON_EVENTS_PATH`).
+
+Tipos de evento canónicos:
+
+| Tipo | Quién emite |
+|------|-------------|
+| `run.started` / `run.done` | `commands/run.ts`, `core/run-agent.ts` |
+| `agent.started` / `agent.done` / `agent.error` | wrapper `withAgentEvents` |
+| `agent.thinking` / `agent.output` / `tool.used` | reservado para integraciones futuras dentro de los agentes |
+| `sb.push.started` / `sb.push.done` / `sb.push.error` | `adapters/sentinel-board.ts` |
+
+Garantías:
+
+1. **Append-only.** Nunca rota ni reescribe `events.jsonl`.
+2. **Fail-soft.** Cualquier error de I/O se traga: el pipeline NUNCA se bloquea.
+3. **Sanitiza.** Claves sensibles (`*token*`, `*secret*`, `*password*`, `authorization`, `bearer`, …) se reemplazan por `[REDACTED]`. Los strings que matchean patrones de secretos conocidos (`sk-…`, `ghp_…`, `Bearer …`, etc.) también.
+4. **Opt-out.** `AMON_EVENTS_ENABLED=false` desactiva toda emisión.
+5. **Neutral.** El schema NO asume ningún consumer concreto. Los campos `source`, `consumer`, `context`, `projectSlug` y `workspaceSlug` permiten enrutamiento sin acoplar el emitter a SB / Liev / IndesPro.
+
+## AMON Agents como runtime reutilizable
+
+AMON Agents está diseñado como **runtime de agentes neutral**, no como subsistema exclusivo de Sentinel Board. SB es hoy el primer y único consumidor operativo, pero el pipeline (planner → state-guardian → qa-reviewer → scorer) y el Event Stream son intencionalmente agnósticos del destino.
+
+### Mapa de consumidores
+
+| Consumidor | Estado | Rol esperado | Cómo consume AA |
+|------------|--------|--------------|-----------------|
+| **Sentinel Board** | ✅ Operativo | Dashboard de gestión / backlog / kanban | `POST /api/agents/import` (1 card por run) + `~/.amon/events.jsonl` |
+| **Liev** | 🔭 Futuro (no implementado) | Asistente personal: tareas, recordatorios, notas, salud, mascota, pagos | Suscriptor del Event Stream para reaccionar a `run.done`/`agent.done` y materializar tareas personales / recordatorios |
+| **IndesPro** | 🔭 Futuro (no implementado) | Motor interno B2B para auditorías, generación de backlog, QA, documentación, automatización para clientes | AA como engine; outputs y eventos consumidos por flujos de IndesPro con `context: "client-audit"` / `projectSlug: "<cliente>"` |
+
+> **Importante:** Liev e IndesPro son consumidores **planeados**, no implementados. No existen carpetas `liev/` ni `indespro/` en este repo, y este documento es la única referencia a ellos hasta que cada integración tenga su propio adapter.
+
+### Reglas de neutralidad
+
+1. **El runtime no conoce a sus consumidores.** `core/run-agent.ts` y `commands/run.ts` no importan ningún adapter consumer-específico.
+2. **Cada consumidor es un adapter aislado.** SB vive en `src/adapters/sentinel-board.ts`. Cuando exista Liev, vivirá en `src/adapters/liev.ts`. Mismo patrón.
+3. **El Event Stream es neutral.** El emitter no conoce a SB ni a ningún otro consumer. Los adapters etiquetan sus propios eventos con `consumer: "<nombre>"`.
+4. **Sin lógica comercial prematura.** No se modela "cliente", "facturación", "workspace de Liev" hasta que un adapter real lo necesite.
+5. **Schema extensible, no fragmentado.** Campos genéricos en `AmonEvent` (`context`, `projectSlug`, `workspaceSlug`) cubren la mayoría de necesidades de routing sin necesidad de tipos paralelos.
+
+### Campos de routing del Event Stream
+
+Todos opcionales. Defaults en el emitter cuando aplique:
+
+| Campo | Tipo | Default | Uso |
+|-------|------|---------|-----|
+| `source` | `string` | `"amon-agents"` | Runtime que produjo el evento. Hoy siempre AA. |
+| `consumer` | `string` | `undefined` | Destino lógico del evento: `"sentinel-board"`, `"liev"`, `"indespro"`. Vacío = evento de pipeline interno. |
+| `context` | `string` | `undefined` | Tag de dominio: `"personal-tasks"`, `"client-audit"`, `"backlog-gen"`, etc. |
+| `projectSlug` | `string` | `undefined` | Identificador estable de proyecto (ej. cliente B2B en IndesPro). |
+| `workspaceSlug` | `string` | `undefined` | Identificador de workspace (ej. cuenta Liev del usuario). |
+
+Un consumer futuro filtra el `events.jsonl` por estos campos. Ejemplo conceptual (no implementado):
+
+```bash
+# Liev sólo le interesan los run.done de tareas personales
+jq -c 'select(.type == "run.done" and .context == "personal-tasks")' ~/.amon/events.jsonl
+```
+
 ## Estructura del proyecto
 
 ```
