@@ -429,3 +429,124 @@ npx ts-node src/core/run-agent.ts TASK-005 feature_small "Crear login OAuth"
 ```
 
 Este modo lee `.env.local` y ejecuta el mismo pipeline que `amon run`.
+
+---
+
+## Binario / alias
+
+`package.json` expone dos binarios apuntando al mismo entry: `amon` y
+`amon-agents`. Si en el PATH existe **otro CLI** llamado `amon` (p. ej.
+`mini-agentes-cli`), puede tomar prioridad sobre este runtime.
+
+`amon doctor` detecta el conflicto y lo reporta. Para forzar este runtime:
+
+- `amon-agents <comando>` — alias seguro instalado por el mismo paquete.
+- `npm run amon -- <comando>` — siempre invoca `ts-node src/cli/amon.ts` de
+  este repo, sin importar el PATH global.
+
+Recomendación: en máquinas con múltiples CLIs `amon`, usa `amon-agents`.
+
+---
+
+## Comandos nuevos (V1 operacional)
+
+### `amon audit --repo <ruta>`
+
+Auditoría estática **sin IA** del repo apuntado.
+
+Verifica:
+- `git status` (branch, dirty, untracked, ahead/behind)
+- `package.json` y `lockfile` (`npm`/`pnpm`/`yarn`)
+- Scripts esperados (`build`, `dev`, `test`, `typecheck`)
+- Leakage de `.env*` (committed/ignored/`.env.example`)
+- Stack: Node / TypeScript / Next.js
+- Estructura mínima (`app/`, `src/`, `lib/`, …)
+
+Output:
+- `outputs/audits/<repoName>-<ISO>.json` con schema `amon-agents.audit/v1`
+- Eventos NDJSON `audit.finding` (uno por hallazgo)
+- Exit `0` si no hay findings de severidad `error`, `1` si los hay.
+
+### `amon scan --repo <ruta>`
+
+Inventario **sin IA** del repo: stack, estructura, docs, rutas API y archivos
+críticos. Detecta automáticamente Next App Router (`app/**/route.ts`) y
+Pages Router (`pages/api/**`).
+
+Output:
+- `outputs/scans/<repoName>-<ISO>.json` con schema `amon-agents.scan/v1`
+- `outputs/scans/<repoName>-<ISO>.md` (resumen humano)
+- Eventos NDJSON `scan.finding`
+
+### `amon watch`
+
+Stub explícito. Reservado para tail+broadcast del event stream con
+SSE/WebSocket. Hoy retorna exit 2 con un mensaje claro. SB Runtime debe leer
+`outputs/events.jsonl` como **histórico** mientras esto no exista.
+
+---
+
+## Event stream NDJSON
+
+Todos los comandos escriben en un único stream append-only en disco:
+
+- Default: `<cwd>/outputs/events.jsonl`
+- Override: `AMON_EVENTS_PATH` (absoluta o relativa al cwd)
+- Opt-out: `AMON_EVENTS_ENABLED=false`
+
+Cada línea es un JSON con la forma `AmonEvent`:
+
+```jsonc
+{
+  "id": "uuid",
+  "ts": "2026-05-27T19:23:00.000Z",
+  "runId": "uuid-de-la-ejecucion",
+  "taskId": "AMON-...",           // opcional
+  "agent": "planner",              // opcional
+  "type": "command.started",       // command.* | agent.* | sb.push.* | audit.finding | scan.finding | run.*
+  "level": "info",                 // debug | info | warn | error
+  "message": "string",
+  "payload": { /* sanitizado, sin secretos */ },
+  "source": "amon-agents",
+  "consumer": "sentinel-board",    // opcional
+  "context": "...",                // opcional
+  "projectSlug": "...",            // opcional
+  "workspaceSlug": "..."           // opcional
+}
+```
+
+Tipos canónicos cubiertos hoy:
+
+- `command.started`, `command.done`, `command.error`
+- `agent.started`, `agent.done`, `agent.error`
+- `run.started`, `run.done`
+- `sb.push.started`, `sb.push.done`, `sb.push.error`
+- `audit.finding`
+- `scan.finding`
+
+### Runtime modes
+
+**A) Batch CLI mode (vigente)**
+
+Cada invocación corre, escribe `outputs/events.jsonl` y termina. SB Runtime
+puede leer el histórico haciendo tail del archivo. No requiere que AA quede
+en línea.
+
+**B) Watch mode (futuro)**
+
+`amon watch` mantendrá AA en línea, alimentando consumidores en tiempo real
+vía SSE/WebSocket sobre el mismo archivo. Hasta entonces, los consumidores
+deben hacer polling del archivo o ejecutar comandos puntuales.
+
+### Workers Python (opcional)
+
+`scan`/`audit` pueden invocar workers Python cuando aporte valor (p. ej.
+análisis estático más profundo). Reglas:
+
+- El CLI principal sigue siendo TypeScript.
+- Python debe devolver **JSON limpio** en stdout (sin logs mezclados).
+- TypeScript normaliza el resultado, lo guarda en `outputs/` y emite los
+  eventos NDJSON. La salida libre de Python NO debe contaminar el contrato.
+
+V1 actual no usa Python; los hooks quedan reservados para `audit`/`scan` v2.
+

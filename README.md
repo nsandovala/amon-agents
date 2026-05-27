@@ -64,7 +64,42 @@ outputs/
   reviews/
   logs/
   adr/
+  audits/                       Reportes JSON de `amon audit`
+  scans/                        Reportes JSON + Markdown de `amon scan`
+  events.jsonl                  Event stream NDJSON (contrato con SB Runtime)
 
 playbooks/
 templates/
 bootstrap/
+```
+
+## CLI
+
+Ver [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) para el detalle completo de
+comandos. Comandos disponibles hoy:
+
+```
+amon run     [--task TASK-ID] [--type feature_small] "descripción"
+amon push    --task TASK-ID
+amon status
+amon doctor
+amon audit   --repo <ruta>
+amon scan    --repo <ruta>
+amon watch                              (stub, no implementado)
+```
+
+## Binario / alias
+
+El paquete instala dos bins apuntando al mismo entry: `amon` y `amon-agents`.
+Si otro CLI llamado `amon` existe en tu PATH global (p. ej. `mini-agentes-cli`),
+puede tomar prioridad. `amon doctor` lo detecta. Para forzar este runtime:
+
+- `amon-agents <comando>` — alias seguro instalado por este paquete.
+- `npm run amon -- <comando>` — siempre invoca este repo.
+
+## Event stream
+
+Todos los comandos empujan eventos NDJSON a `outputs/events.jsonl`
+(override: `AMON_EVENTS_PATH`, opt-out: `AMON_EVENTS_ENABLED=false`).
+Sentinel Board Runtime consume este archivo. Ver `docs/CLI_REFERENCE.md` →
+"Event stream NDJSON" para el schema y la lista canónica de tipos.

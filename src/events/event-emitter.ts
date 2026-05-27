@@ -2,23 +2,26 @@
  * Event emitter append-only para AMON Agents.
  *
  * Escribe eventos NDJSON (un JSON por línea) en disco — por defecto
- * en `~/.amon/events.jsonl`. La carpeta se crea on-demand.
+ * en `<cwd>/outputs/events.jsonl`. La carpeta se crea on-demand.
+ *
+ * Este path es el contrato consumible por SB Runtime y otros consumidores:
+ * todos los comandos de la CLI (doctor, status, run, push, audit, scan)
+ * empujan al mismo stream con el mismo schema.
  *
  * Reglas:
  *   1. Append-only. Nunca reescribe ni rota archivos.
  *   2. Fail-soft. Cualquier error se traga: el pipeline NUNCA se bloquea.
  *   3. Sanitiza payload para no escribir API keys, tokens, secrets, passwords.
  *   4. Opt-out vía AMON_EVENTS_ENABLED=false. Por defecto habilitado.
- *   5. Path configurable vía AMON_EVENTS_PATH (vacío → default).
+ *   5. Path configurable vía AMON_EVENTS_PATH (vacío → default cwd-local).
  *
  * Variables de entorno:
  *   AMON_EVENTS_ENABLED  — "false" para deshabilitar; cualquier otro valor (o vacío) habilita.
- *   AMON_EVENTS_PATH     — Ruta absoluta al .jsonl. Si vacío, usa ~/.amon/events.jsonl.
+ *   AMON_EVENTS_PATH     — Ruta absoluta al .jsonl. Si vacío, usa <cwd>/outputs/events.jsonl.
  */
 import { randomUUID } from "crypto";
 import { appendFile, mkdir } from "fs/promises";
-import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, resolve } from "path";
 import { AmonEvent, AmonEventAgent } from "./types";
 
 /* ──────────────────── Sanitización ──────────────────── */
@@ -112,8 +115,20 @@ function isEnabled(): boolean {
 
 function resolveEventsPath(): string {
   const explicit = process.env.AMON_EVENTS_PATH?.trim();
-  if (explicit && explicit.length > 0) return explicit;
-  return join(homedir(), ".amon", "events.jsonl");
+  if (explicit && explicit.length > 0) {
+    return isAbsolute(explicit) ? explicit : resolve(process.cwd(), explicit);
+  }
+  return join(process.cwd(), "outputs", "events.jsonl");
+}
+
+/** Path efectivo del event stream — usado por `amon status` y diagnostics. */
+export function getEventsPath(): string {
+  return resolveEventsPath();
+}
+
+/** ¿Está habilitada la escritura del stream? Útil para diagnostics. */
+export function isEventsEnabled(): boolean {
+  return isEnabled();
 }
 
 /* ──────────────────── Escritura ──────────────────── */
@@ -176,6 +191,79 @@ export async function emitAmonEvent(
  */
 export function newRunId(): string {
   return randomUUID();
+}
+
+/**
+ * Wrapper de conveniencia que emite `command.started` antes de invocar
+ * `fn`, y `command.done` o `command.error` al finalizar.
+ *
+ * Devuelve el código de salida tal cual; nunca traga la excepción.
+ * El emitter es fail-soft, así que esto no rompe el flujo del CLI.
+ *
+ * Uso típico desde cli/amon.ts o cada commands/*.ts:
+ *   return withCommandEvents({ command: "audit", runId, repo }, () => auditCore(...));
+ */
+export interface CommandCtx {
+  command: string;
+  runId: string;
+  taskId?: string;
+  repo?: string;
+  agent?: AmonEventAgent;
+  args?: Record<string, unknown>;
+  consumer?: string;
+}
+
+export async function withCommandEvents(
+  ctx: CommandCtx,
+  fn: () => Promise<number>
+): Promise<number> {
+  const baseMeta = {
+    runId: ctx.runId,
+    taskId: ctx.taskId,
+    agent: ctx.agent,
+    consumer: ctx.consumer ?? "sentinel-board",
+  } as const;
+
+  await emitAmonEvent({
+    ...baseMeta,
+    type: "command.started",
+    level: "info",
+    message: `command ${ctx.command} iniciado`,
+    payload: {
+      command: ctx.command,
+      repo: ctx.repo,
+      args: ctx.args,
+    },
+  });
+
+  try {
+    const exitCode = await fn();
+    await emitAmonEvent({
+      ...baseMeta,
+      type: exitCode === 0 ? "command.done" : "command.error",
+      level: exitCode === 0 ? "info" : "error",
+      message:
+        exitCode === 0
+          ? `command ${ctx.command} completado`
+          : `command ${ctx.command} terminó con exit=${exitCode}`,
+      payload: { command: ctx.command, exitCode },
+    });
+    return exitCode;
+  } catch (err) {
+    const e = err as Error;
+    await emitAmonEvent({
+      ...baseMeta,
+      type: "command.error",
+      level: "error",
+      message: e.message || `command ${ctx.command} falló`,
+      payload: {
+        command: ctx.command,
+        name: e.name,
+        stack: e.stack,
+      },
+    });
+    throw err;
+  }
 }
 
 /**

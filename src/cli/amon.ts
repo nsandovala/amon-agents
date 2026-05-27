@@ -16,12 +16,16 @@
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
+import { auditCommand } from "../commands/audit";
 import { doctorCommand } from "../commands/doctor";
 import { pushCommand } from "../commands/push";
 import { runCommand } from "../commands/run";
+import { scanCommand } from "../commands/scan";
 import { statusCommand } from "../commands/status";
+import { watchCommand } from "../commands/watch";
+import { newRunId, withCommandEvents } from "../events/event-emitter";
 import { error, setLevel } from "../utils/logger";
-import { parseArgs } from "./parse-args";
+import { parseArgs, ParsedArgs } from "./parse-args";
 
 setLevel("info");
 
@@ -41,16 +45,25 @@ Uso:
   amon push --task TASK-ID
   amon status
   amon doctor
+  amon audit --repo <ruta>
+  amon scan  --repo <ruta>
+  amon watch                       (preview: aún no implementado)
   amon help
 
 Alias seguro:
-  amon-agents <comando>           (evita conflictos con otros CLIs)
+  amon-agents <comando>           — preferido si tenés otro CLI \`amon\` global.
+
+Conflicto de binario:
+  Puede existir otro CLI llamado \`amon\` en PATH (p. ej. mini-agentes-cli).
+  Si \`amon doctor\` lo detecta, usá \`amon-agents\` o \`npm run amon -- ...\`
+  para forzar este runtime. Ver README §"Binario / alias".
 
 Notas:
   - Si AMON_AGENTS_PUSH_TO_SB=true, "amon run" envía a Sentinel Board al terminar.
   - "amon push" siempre envía (force), independientemente del flag de entorno.
   - Las variables se leen desde .env.local en el cwd actual.
   - Usa "amon doctor" para diagnosticar el entorno antes de ejecutar.
+  - Event stream NDJSON: outputs/events.jsonl en el cwd (override: AMON_EVENTS_PATH).
 `;
 
 function printHelp(): void {
@@ -72,16 +85,44 @@ async function main(): Promise<number> {
   }
 
   const parsed = parseArgs(rest);
+  const runId = newRunId();
+
+  // Args sanitizables para el evento command.started — emit-side limpia
+  // secretos por sí mismo, pero acotamos lo que entra al payload.
+  const evtArgs: Record<string, unknown> = {
+    positional: parsed.positional.slice(0, 3),
+    flagKeys: Object.keys(parsed.flags),
+  };
+  const repoArg =
+    typeof parsed.flags.repo === "string" ? parsed.flags.repo : undefined;
+  const taskArg =
+    typeof parsed.flags.task === "string" ? parsed.flags.task : undefined;
+
+  const dispatch = async (
+    name: string,
+    fn: (args: ParsedArgs) => Promise<number>
+  ): Promise<number> => {
+    return withCommandEvents(
+      { command: name, runId, taskId: taskArg, repo: repoArg, args: evtArgs },
+      () => fn(parsed)
+    );
+  };
 
   switch (command) {
     case "run":
-      return runCommand(parsed);
+      return dispatch("run", runCommand);
     case "push":
-      return pushCommand(parsed);
+      return dispatch("push", pushCommand);
     case "status":
-      return statusCommand();
+      return dispatch("status", () => statusCommand());
     case "doctor":
-      return doctorCommand();
+      return dispatch("doctor", () => doctorCommand());
+    case "audit":
+      return dispatch("audit", auditCommand);
+    case "scan":
+      return dispatch("scan", scanCommand);
+    case "watch":
+      return dispatch("watch", () => watchCommand());
     default:
       error(`[amon] Comando desconocido: "${command}"`);
       printHelp();

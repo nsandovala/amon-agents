@@ -27,6 +27,9 @@ export type AmonEventAgent =
  * para los emisores que quieran type-safety.
  */
 export type AmonEventType =
+  | "command.started"
+  | "command.done"
+  | "command.error"
   | "agent.started"
   | "agent.thinking"
   | "agent.output"
@@ -37,10 +40,15 @@ export type AmonEventType =
   | "sb.push.done"
   | "sb.push.error"
   | "run.started"
-  | "run.done";
+  | "run.done"
+  | "audit.finding"
+  | "scan.finding";
 
 /** Constantes para evitar typos al emitir. */
 export const AmonEventTypes = {
+  CommandStarted: "command.started",
+  CommandDone: "command.done",
+  CommandError: "command.error",
   AgentStarted: "agent.started",
   AgentThinking: "agent.thinking",
   AgentOutput: "agent.output",
@@ -52,6 +60,8 @@ export const AmonEventTypes = {
   SbPushError: "sb.push.error",
   RunStarted: "run.started",
   RunDone: "run.done",
+  AuditFinding: "audit.finding",
+  ScanFinding: "scan.finding",
 } as const;
 
 /**
