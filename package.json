@@ -13,7 +13,10 @@
     "start": "node dist/core/run-agent.js",
     "dev": "ts-node src/core/run-agent.ts",
     "amon": "ts-node src/cli/amon.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "amon",
@@ -25,7 +28,8 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.14.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^2.1.0"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
