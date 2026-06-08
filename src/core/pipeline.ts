@@ -79,12 +79,33 @@ export async function runPipeline(params: PipelineParams): Promise<number> {
 
   for (const agentName of flow) {
     const executor = getAgentExecutor(agentName);
+    const agentStart = Date.now();
+
     const result = await withAgentEvents(
       { runId, taskId, agent: AGENT_TO_EVENT_AGENT[agentName] },
       () => executor(ctx)
     );
+
+    const agentDuration = Date.now() - agentStart;
     ctx.results[agentName] = result;
     saveLocalResult(result);
+
+    info(`[Pipeline] Agent ${agentName} completed in ${agentDuration}ms`);
+    await emitAmonEvent({
+      runId,
+      taskId,
+      agent: AGENT_TO_EVENT_AGENT[agentName],
+      type: "agent.metrics",
+      level: "info",
+      message: `Agent ${agentName} completed in ${agentDuration}ms`,
+      payload: {
+        agent: agentName,
+        durationMs: agentDuration,
+        promptTokens: undefined,
+        completionTokens: undefined,
+        totalTokens: undefined,
+      },
+    });
 
     // Veredicto especial de state-guardian
     if (agentName === "security") {

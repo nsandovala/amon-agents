@@ -35,6 +35,7 @@ export type AmonEventType =
   | "agent.output"
   | "agent.done"
   | "agent.error"
+  | "agent.metrics"
   | "tool.used"
   | "sb.push.started"
   | "sb.push.done"
@@ -54,6 +55,7 @@ export const AmonEventTypes = {
   AgentOutput: "agent.output",
   AgentDone: "agent.done",
   AgentError: "agent.error",
+  AgentMetrics: "agent.metrics",
   ToolUsed: "tool.used",
   SbPushStarted: "sb.push.started",
   SbPushDone: "sb.push.done",
