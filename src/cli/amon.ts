@@ -18,6 +18,7 @@ dotenv.config({ path: ".env.local" });
 
 import { auditCommand } from "../commands/audit";
 import { doctorCommand } from "../commands/doctor";
+import { historyCommand } from "../commands/history";
 import { pushCommand } from "../commands/push";
 import { runCommand } from "../commands/run";
 import { scanCommand } from "../commands/scan";
@@ -44,6 +45,7 @@ Uso:
   amon run [--task TASK-ID] [--type feature_small] "descripción"
   amon push --task TASK-ID
   amon status
+  amon history [--limit N]
   amon doctor
   amon audit --repo <ruta>
   amon scan  --repo <ruta>
@@ -115,6 +117,8 @@ async function main(): Promise<number> {
       return dispatch("push", pushCommand);
     case "status":
       return dispatch("status", () => statusCommand());
+    case "history":
+      return dispatch("history", historyCommand);
     case "doctor":
       return dispatch("doctor", () => doctorCommand());
     case "audit":
