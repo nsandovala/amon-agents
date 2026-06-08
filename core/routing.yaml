@@ -5,56 +5,63 @@ task_types:
     description: "Cambio acotado de producto o interfaz"
     flow:
       - architect
-      - dev
+      - security
       - qa
+      - ops
     output_path: "outputs/plans"
 
   ui_change:
     description: "Cambio visual, layout o experiencia de usuario"
     flow:
       - architect
-      - designer
-      - dev
+      - security
       - qa
+      - ops
     output_path: "outputs/plans"
 
   bugfix:
     description: "Corrección de bug o regresión existente"
     flow:
+      - architect
+      - security
       - qa
-      - dev
-      - qa
+      - ops
     output_path: "outputs/reviews"
 
   infra_change:
     description: "Cambio de entorno, CI/CD, deploy, variables o infraestructura"
     flow:
       - architect
-      - ops
       - security
       - qa
+      - ops
     output_path: "outputs/logs"
 
   security_check:
     description: "Revisión de secretos, permisos, exposición o endurecimiento"
     flow:
+      - architect
       - security
       - qa
+      - ops
     output_path: "outputs/reviews"
 
   research_task:
     description: "Análisis, comparación técnica o investigación guiada"
     flow:
       - architect
+      - security
+      - qa
+      - ops
     output_path: "outputs/logs"
 
 routing_rules:
   - "Si una tarea toca arquitectura, architect debe participar primero."
-  - "Si una tarea toca interfaz, designer debe participar antes de dev."
-  - "Si una tarea es bugfix, QA debe abrir y cerrar el flujo."
   - "Si una tarea toca secretos, variables, auth o headers, security participa obligatoriamente."
   - "Si una tarea impacta despliegue o entorno, ops participa obligatoriamente."
+  - "Todo flujo debe pasar por qa antes de considerarse listo."
 
 notes:
   - "Este routing define flujo base. Repos consumidores pueden extenderlo, pero no contradecirlo sin documentarlo."
   - "Las tareas clínicas o médicas sensibles deben definirse luego como una capa específica del dominio HEO/Jarvis."
+  - "designer y dev existen como roles definidos en core-agents.yaml pero aún no tienen ejecutores implementados en el pipeline."
