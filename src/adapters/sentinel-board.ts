@@ -649,7 +649,18 @@ export async function sendUnifiedCardToSentinelBoard(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "<unreadable body>");
-      warn(`[SentinelBoard] HTTP ${res.status} — tarea ${taskId}: ${body}`);
+
+      if (res.status === 404) {
+        warn(
+          `[SentinelBoard] Endpoint /api/agents/import no encontrado. ` +
+            `Verifica que Sentinel Board tenga implementada la ruta ` +
+            `app/api/agents/import/route.ts o pages/api/agents/import.ts.`
+        );
+      } else {
+        const summary = body.length > 300 ? `${body.slice(0, 300)}…[truncated]` : body;
+        warn(`[SentinelBoard] HTTP ${res.status} — tarea ${taskId}: ${summary}`);
+      }
+
       await emitAmonEvent({
         runId,
         taskId,
