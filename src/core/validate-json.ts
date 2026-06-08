@@ -37,10 +37,12 @@ export interface FieldRule {
 
 /**
  * Valida que un objeto tenga todos los campos requeridos del contrato de salida.
+ * @param data - El objeto a validar.
+ * @param contract - Contrato opcional para tests; si no se provee, se lee desde disco.
  */
-export function validateOutput(data: unknown): ValidationResult {
-  const contract = loadContract();
-  const required = contract.default_output.required_fields;
+export function validateOutput(data: unknown, contract?: OutputContractYaml): ValidationResult {
+  const resolved = contract ?? loadContract();
+  const required = resolved.default_output.required_fields;
   const errors: string[] = [];
 
   if (typeof data !== "object" || data === null) {
@@ -55,7 +57,7 @@ export function validateOutput(data: unknown): ValidationResult {
       continue;
     }
     const value = obj[field];
-    const fieldRule = contract.field_rules[field];
+    const fieldRule = resolved.field_rules[field];
     if (!fieldRule) continue;
 
     // Validación básica de tipo
