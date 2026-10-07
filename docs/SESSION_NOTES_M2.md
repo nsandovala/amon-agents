@@ -60,6 +60,19 @@
 
 ## Pendientes Próxima Sesión
 
+### JARVIS-002 handoff — First Heartbeat
+
+- **Run correlation:** PASS. `amon run` now preserves one `runId` from CLI `command.started` through `runPipeline` events.
+- **First Heartbeat:** partial FAIL, controlled.
+- **Failure:** Ollama `qwen3.5:9b` timed out in `planner` before any ticket outputs were persisted.
+- **runId:** `242f935d-4d57-43bc-a8fe-a3d39171edc3`
+- **Events present:** `command.started`, `run.started`, `agent.started` (`planner`), `agent.error` (`planner`), `command.error`.
+- **Events absent:** no `run.done`, no `command.done`.
+- **Outputs:** no persisted outputs for `BF-JARVIS-SMOKE-001`.
+- **BracketFlow:** intact; pre/post `git status --short` stayed `?? CLAUDE.md`.
+- **Sentinel Board:** not running during verification, so Runtime read was blocked.
+- **Next investigation:** diagnose real Ollama/provider timeout before touching pipeline behavior.
+
 1. **Revisar GitHub Actions** después del push (verificar que el workflow siga pasando).
 2. **Revisar lint preexistente** en `sentinel-board` (el endpoint nuevo puede tener advertencias de ESLint / TypeScript).
 3. **M2-D1: diseñar fallback LLM.**

@@ -112,7 +112,7 @@ async function main(): Promise<number> {
 
   switch (command) {
     case "run":
-      return dispatch("run", runCommand);
+      return dispatch("run", (args) => runCommand(args, { runId }));
     case "push":
       return dispatch("push", pushCommand);
     case "status":
