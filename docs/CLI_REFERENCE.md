@@ -50,7 +50,9 @@ amon run --playbook python-radar --type research_task "Evaluar motor de señales
 | `AMON_AGENTS_MODEL` | No | Modelo fallback si no hay variable específica del provider |
 | `AMON_AGENTS_PUSH_TO_SB` | No | `true` para push automático a Sentinel Board al terminar |
 | `AMON_AGENTS_ALLOW_MOCK_FALLBACK` | No | `true` para fallback a mock si el provider real falla |
-| `AMON_AGENTS_LLM_TIMEOUT_MS` | No | Timeout en ms para llamadas LLM (default: `30000`) |
+| `AMON_AGENTS_LLM_TIMEOUT_MS` | No | Timeout en ms para llamadas LLM (default: `120000`) |
+| `AMON_OLLAMA_THINK` | No | Solo Ollama: `false` por defecto para evitar razonamiento largo; usar `true` para habilitarlo |
+| `AMON_OLLAMA_NUM_PREDICT` | No | Solo Ollama: límite de generación local (default: `1536`) |
 
 **Salida esperada:**
 
@@ -384,11 +386,13 @@ amon audit --repo . --focus architecture --playbook python-radar
 AMON_AGENTS_PROVIDER=ollama          # ollama | lmstudio | openai | gemini | openrouter | mock
 AMON_AGENTS_MODEL=llama3             # Modelo fallback
 AMON_AGENTS_ALLOW_MOCK_FALLBACK=false
-AMON_AGENTS_LLM_TIMEOUT_MS=30000
+AMON_AGENTS_LLM_TIMEOUT_MS=120000
 
 # ── Ollama (local) ──
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3
+AMON_OLLAMA_THINK=false              # true | false; default false
+AMON_OLLAMA_NUM_PREDICT=1536         # entero positivo; default 1536
 
 # ── LM Studio (local) ──
 LMSTUDIO_BASE_URL=http://localhost:1234
@@ -549,4 +553,3 @@ análisis estático más profundo). Reglas:
   eventos NDJSON. La salida libre de Python NO debe contaminar el contrato.
 
 V1 actual no usa Python; los hooks quedan reservados para `audit`/`scan` v2.
-

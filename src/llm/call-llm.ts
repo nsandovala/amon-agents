@@ -32,13 +32,37 @@ function env(key: string): string | undefined {
   return process.env[key];
 }
 
-const DEFAULT_TIMEOUT_MS = 30000;
+export const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_OLLAMA_NUM_PREDICT = 1536;
 
-function getTimeoutMs(): number {
+export function getTimeoutMs(): number {
   const raw = env("AMON_AGENTS_LLM_TIMEOUT_MS");
   if (!raw) return DEFAULT_TIMEOUT_MS;
-  const parsed = parseInt(raw, 10);
-  return Number.isNaN(parsed) ? DEFAULT_TIMEOUT_MS : parsed;
+  const normalized = raw.trim();
+  if (!/^\d+$/.test(normalized)) return DEFAULT_TIMEOUT_MS;
+  const parsed = parseInt(normalized, 10);
+  return parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
+}
+
+export function getOllamaThink(): boolean {
+  const raw = env("AMON_OLLAMA_THINK");
+  if (!raw) return false;
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+
+  throw new Error("Invalid AMON_OLLAMA_THINK: expected true or false");
+}
+
+export function getOllamaNumPredict(): number {
+  const raw = env("AMON_OLLAMA_NUM_PREDICT");
+  if (!raw) return DEFAULT_OLLAMA_NUM_PREDICT;
+
+  const normalized = raw.trim();
+  if (!/^\d+$/.test(normalized)) return DEFAULT_OLLAMA_NUM_PREDICT;
+  const parsed = parseInt(normalized, 10);
+  return parsed > 0 ? parsed : DEFAULT_OLLAMA_NUM_PREDICT;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
@@ -107,8 +131,9 @@ async function callOllama(prompt: string, model: string): Promise<LLMResponse> {
   const body = {
     model,
     prompt,
+    think: getOllamaThink(),
     stream: false,
-    options: { temperature: 0.2 },
+    options: { temperature: 0.2, num_predict: getOllamaNumPredict() },
   };
 
   const res = await fetchWithTimeout(url, {
