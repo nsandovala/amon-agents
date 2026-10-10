@@ -15,6 +15,7 @@
  *   amon worker-job --job WORKER-SMOKE-001 --action inspect_repo --repo <ruta>
  *   amon worker-job --job JARVIS-004C --action prepare_worktree --repo <ruta> --branch worker/JARVIS-004C
  *   amon worker-job --job JARVIS-004D-RUN-001 --action run_coding_tool --repo <ruta> --worktree <ruta> --tool opencode
+ *   amon guardian-review --review GUARDIAN-004E-SMOKE-001 --job JARVIS-004D-RUN-004
  *   amon help
  */
 import dotenv from "dotenv";
@@ -22,6 +23,7 @@ dotenv.config({ path: ".env.local" });
 
 import { auditCommand } from "../commands/audit";
 import { doctorCommand } from "../commands/doctor";
+import { guardianReviewCommand } from "../commands/guardian-review";
 import { historyCommand } from "../commands/history";
 import { pushCommand } from "../commands/push";
 import { runCommand } from "../commands/run";
@@ -57,6 +59,7 @@ Uso:
   amon worker-job --job <id> --action inspect_repo --repo <ruta>
   amon worker-job --job <id> --action prepare_worktree --repo <ruta> --branch worker/<id>
   amon worker-job --job <id> --action run_coding_tool --repo <ruta> --worktree <ruta> --tool opencode
+  amon guardian-review --review <id> --job <worker-job-id>
   amon audit --repo <ruta>
   amon scan  --repo <ruta>
   amon watch                       (preview: aún no implementado)
@@ -141,6 +144,8 @@ async function main(): Promise<number> {
       return workerCommand(parsed, { runId });
     case "worker-job":
       return workerJobCommand(parsed);
+    case "guardian-review":
+      return guardianReviewCommand(parsed);
     default:
       error(`[amon] Comando desconocido: "${command}"`);
       printHelp();
