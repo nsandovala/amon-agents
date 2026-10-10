@@ -12,6 +12,7 @@
  *   amon status
  *   amon doctor
  *   amon worker
+ *   amon worker-job --job WORKER-SMOKE-001 --action inspect_repo --repo <ruta>
  *   amon help
  */
 import dotenv from "dotenv";
@@ -25,6 +26,7 @@ import { runCommand } from "../commands/run";
 import { scanCommand } from "../commands/scan";
 import { statusCommand } from "../commands/status";
 import { watchCommand } from "../commands/watch";
+import { workerJobCommand } from "../commands/worker-job";
 import { workerCommand } from "../commands/worker";
 import { newRunId, withCommandEvents } from "../events/event-emitter";
 import { error, setLevel } from "../utils/logger";
@@ -50,6 +52,7 @@ Uso:
   amon history [--limit N]
   amon doctor
   amon worker                       (Worker Host MVP: status + heartbeat local)
+  amon worker-job --job <id> --action inspect_repo --repo <ruta>
   amon audit --repo <ruta>
   amon scan  --repo <ruta>
   amon watch                       (preview: aún no implementado)
@@ -132,6 +135,8 @@ async function main(): Promise<number> {
       return dispatch("watch", () => watchCommand());
     case "worker":
       return workerCommand(parsed, { runId });
+    case "worker-job":
+      return workerJobCommand(parsed);
     default:
       error(`[amon] Comando desconocido: "${command}"`);
       printHelp();

@@ -42,3 +42,46 @@ export interface WorkerStatus {
   startedAt: string;
   lastHeartbeatAt: string;
 }
+
+export type WorkerJobAction = "inspect_repo";
+export type WorkerJobStatus = "queued" | "running" | "done" | "failed";
+
+export interface WorkerJob {
+  jobId: string;
+  action: WorkerJobAction;
+  repo: string;
+  createdAt?: string;
+}
+
+export interface InspectRepoEvidence {
+  repoPath: string;
+  repoExists: boolean;
+  isGitRepo: boolean;
+  branch: string | null;
+  headSha: string | null;
+  gitStatusShort: string;
+  gitStatusBranch: string;
+  dirty: boolean;
+  timestamp: string;
+}
+
+export interface WorkerJobTransition {
+  status: WorkerJobStatus;
+  at: string;
+}
+
+export interface WorkerJobState {
+  jobId: string;
+  action: string;
+  repo: string;
+  status: WorkerJobStatus;
+  createdAt?: string;
+  queuedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  exitCode?: number;
+  error?: string;
+  evidence?: InspectRepoEvidence;
+  transitions: WorkerJobTransition[];
+}
