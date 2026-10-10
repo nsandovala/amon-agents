@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "child_process";
 import { existsSync as defaultExistsSync } from "fs";
-import { mkdir, readFile, realpath, writeFile } from "fs/promises";
+import { mkdir, readFile, realpath } from "fs/promises";
+import { atomicWriteFile } from "../utils/fs-helpers";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { resolveWorkspaceRoot } from "./host";
 import {
@@ -87,8 +88,7 @@ export function defaultExecFile(command: string, args: string[], options: { time
 }
 
 async function defaultPersist(state: WorkerJobState, path: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await atomicWriteFile(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
 function iso(now: () => Date): string {

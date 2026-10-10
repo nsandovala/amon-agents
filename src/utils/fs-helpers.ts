@@ -5,9 +5,10 @@
  * externas: solo `fs/promises`, `fs`, `path`. Pensados para ser baratos
  * en repos chicos (audit/scan recorren ≤ 5k archivos).
  */
+import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "fs";
-import { readdir, readFile, stat } from "fs/promises";
-import { dirname, join, relative } from "path";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "fs/promises";
+import { basename, dirname, join, relative } from "path";
 
 /** Lee las últimas N líneas no vacías de un archivo. Si no existe → []. */
 export async function tailLines(filePath: string, n: number): Promise<string[]> {
@@ -135,4 +136,75 @@ export function statSyncSafe(p: string): { exists: boolean; isFile: boolean; mti
 /** Asegura que la carpeta del archivo existe. */
 export function dirOf(filePath: string): string {
   return dirname(filePath);
+}
+
+export interface AtomicWriteDeps {
+  mkdirFn?: (path: string, opts: { recursive: boolean }) => Promise<unknown>;
+  writeFileFn?: (path: string, data: string, encoding: BufferEncoding) => Promise<void>;
+  renameFn?: (src: string, dst: string) => Promise<void>;
+  unlinkFn?: (path: string) => Promise<void>;
+  uuidFn?: () => string;
+}
+
+/**
+ * Writes `data` to `destPath` atomically using a same-directory temp file
+ * and fs.rename(). Readers see either the previous complete file or the new
+ * complete file — never a partial write.
+ *
+ * Creates the destination directory if it does not exist.
+ * On any failure, attempts best-effort removal of the temp file before
+ * re-throwing the original error.
+ *
+ * GUARANTEES:
+ *   - No partial reads: rename is atomic on POSIX (Linux, macOS).
+ *   - No temp content leak: .tmp files are invisible to JSON readers that
+ *     filter for .json files.
+ *   - Best-effort cleanup on controlled failure: if writeFile or rename
+ *     throws, an attempt is made to unlink the temp file. Abrupt process
+ *     termination (SIGKILL, power loss) may leave an orphaned .tmp file;
+ *     no automatic cleanup is performed in R1.
+ *   - Last-writer wins under concurrent calls: POSIX rename is atomic, so
+ *     no corruption occurs when two callers race to the same destination.
+ *     One write silently prevails; the other's content is discarded.
+ *
+ * DOES NOT GUARANTEE:
+ *   - Power-loss durability: no fsync. Data is in the OS page cache on
+ *     return. A power failure after rename() may revert the file.
+ *   - Exactly-once execution: this utility protects file integrity only.
+ *     It does not prevent a job from executing more than once.
+ *   - Multi-file transactions: two sequential atomicWriteFile calls are not
+ *     coordinated. A reader between them observes an inconsistent pair.
+ *   - Concurrent writer coordination: the upstream existence checks in
+ *     runWorkerJob() and runGuardianReview() are not atomic with respect to
+ *     this write. Two concurrent callers passing those checks simultaneously
+ *     will both write; the last rename wins without error. No locking
+ *     mechanism is introduced in R1.
+ *
+ * WINDOWS: fs.rename() may fail with EPERM if the destination is held open
+ *   by another process. This platform is recognized but not verified in CI.
+ *   No unlink-before-rename fallback is used; rename failures are propagated.
+ */
+export async function atomicWriteFile(
+  destPath: string,
+  data: string,
+  deps: AtomicWriteDeps = {}
+): Promise<void> {
+  const dir = dirname(destPath);
+  const base = basename(destPath);
+  const uuid = (deps.uuidFn ?? randomUUID)();
+  const tmpPath = join(dir, `${base}.${uuid}.tmp`);
+
+  const doMkdir = deps.mkdirFn ?? mkdir;
+  const doWrite = deps.writeFileFn ?? writeFile;
+  const doRename = deps.renameFn ?? rename;
+  const doUnlink = deps.unlinkFn ?? unlink;
+
+  await doMkdir(dir, { recursive: true });
+  try {
+    await doWrite(tmpPath, data, "utf8");
+    await doRename(tmpPath, destPath);
+  } catch (err) {
+    try { await doUnlink(tmpPath); } catch { /* best-effort cleanup */ }
+    throw err;
+  }
 }

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "child_process";
 import { existsSync as defaultExistsSync } from "fs";
-import { mkdir, writeFile } from "fs/promises";
+import { atomicWriteFile } from "../utils/fs-helpers";
 import { arch as osArch, cpus, freemem, hostname as osHostname, platform as osPlatform, totalmem } from "os";
 import { dirname, join, resolve } from "path";
 import { WorkerOllamaStatus, WorkerStatus, WorkerToolStatus, WorkerWorkspace } from "./types";
@@ -288,8 +288,7 @@ export async function buildWorkerStatus(deps: WorkerDetectionDeps = {}): Promise
 }
 
 export async function persistWorkerStatus(status: WorkerStatus, statusPath = getWorkerStatusPath()): Promise<void> {
-  await mkdir(dirname(statusPath), { recursive: true });
-  await writeFile(statusPath, `${JSON.stringify(status, null, 2)}\n`, "utf8");
+  await atomicWriteFile(statusPath, `${JSON.stringify(status, null, 2)}\n`);
 }
 
 export function formatWorkerSummary(status: WorkerStatus): string {

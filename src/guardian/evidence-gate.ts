@@ -1,5 +1,6 @@
 import { existsSync as defaultExistsSync } from "fs";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile } from "fs/promises";
+import { atomicWriteFile } from "../utils/fs-helpers";
 import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { resolveWorkspaceRoot } from "../worker/host";
 import { CodingToolEvidence, WorkerJobEvidence, WorkerJobState } from "../worker/types";
@@ -212,7 +213,8 @@ export async function runGuardianReview(input: GuardianReviewInput, deps: Guardi
   const env = deps.env ?? process.env;
   const existsSync = deps.existsSync ?? defaultExistsSync;
   const read = deps.readFile ?? readFile;
-  const write = deps.writeFile ?? writeFile;
+  const write: (path: string, data: string, encoding: BufferEncoding) => Promise<void> =
+    deps.writeFile ?? ((path, data, _enc) => atomicWriteFile(path, data));
   const makeDir = deps.mkdir ?? mkdir;
   const now = deps.now ?? (() => new Date());
   const reviewPath = getGuardianReviewPath(input.reviewId, cwd);
