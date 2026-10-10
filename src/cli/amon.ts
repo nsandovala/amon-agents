@@ -11,6 +11,7 @@
  *   amon push --task TASK-ID
  *   amon status
  *   amon doctor
+ *   amon worker
  *   amon help
  */
 import dotenv from "dotenv";
@@ -24,6 +25,7 @@ import { runCommand } from "../commands/run";
 import { scanCommand } from "../commands/scan";
 import { statusCommand } from "../commands/status";
 import { watchCommand } from "../commands/watch";
+import { workerCommand } from "../commands/worker";
 import { newRunId, withCommandEvents } from "../events/event-emitter";
 import { error, setLevel } from "../utils/logger";
 import { parseArgs, ParsedArgs } from "./parse-args";
@@ -47,6 +49,7 @@ Uso:
   amon status
   amon history [--limit N]
   amon doctor
+  amon worker                       (Worker Host MVP: status + heartbeat local)
   amon audit --repo <ruta>
   amon scan  --repo <ruta>
   amon watch                       (preview: aún no implementado)
@@ -127,6 +130,8 @@ async function main(): Promise<number> {
       return dispatch("scan", scanCommand);
     case "watch":
       return dispatch("watch", () => watchCommand());
+    case "worker":
+      return workerCommand(parsed, { runId });
     default:
       error(`[amon] Comando desconocido: "${command}"`);
       printHelp();
