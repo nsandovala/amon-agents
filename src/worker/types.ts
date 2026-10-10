@@ -43,13 +43,14 @@ export interface WorkerStatus {
   lastHeartbeatAt: string;
 }
 
-export type WorkerJobAction = "inspect_repo";
+export type WorkerJobAction = "inspect_repo" | "prepare_worktree";
 export type WorkerJobStatus = "queued" | "running" | "done" | "failed";
 
 export interface WorkerJob {
   jobId: string;
   action: WorkerJobAction;
   repo: string;
+  branch?: string;
   createdAt?: string;
 }
 
@@ -65,6 +66,20 @@ export interface InspectRepoEvidence {
   timestamp: string;
 }
 
+export interface PrepareWorktreeEvidence {
+  repoPath: string;
+  sourceBranch: string | null;
+  sourceHeadSha: string | null;
+  worktreePath: string;
+  worktreeBranch: string | null;
+  worktreeHeadSha: string | null;
+  worktreeStatusShort: string | null;
+  created: boolean;
+  timestamp: string;
+}
+
+export type WorkerJobEvidence = InspectRepoEvidence | PrepareWorktreeEvidence;
+
 export interface WorkerJobTransition {
   status: WorkerJobStatus;
   at: string;
@@ -74,6 +89,7 @@ export interface WorkerJobState {
   jobId: string;
   action: string;
   repo: string;
+  branch?: string;
   status: WorkerJobStatus;
   createdAt?: string;
   queuedAt?: string;
@@ -82,6 +98,6 @@ export interface WorkerJobState {
   durationMs?: number;
   exitCode?: number;
   error?: string;
-  evidence?: InspectRepoEvidence;
+  evidence?: WorkerJobEvidence;
   transitions: WorkerJobTransition[];
 }

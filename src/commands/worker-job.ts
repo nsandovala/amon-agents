@@ -13,6 +13,7 @@ export async function workerJobCommand(args: ParsedArgs): Promise<number> {
       jobId: stringFlag(args, "job"),
       action: stringFlag(args, "action"),
       repo: stringFlag(args, "repo"),
+      branch: stringFlag(args, "branch"),
     });
     const state = await runWorkerJob(job);
     process.stdout.write(formatWorkerJobSummary(state));
