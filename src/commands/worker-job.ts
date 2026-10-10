@@ -14,6 +14,9 @@ export async function workerJobCommand(args: ParsedArgs): Promise<number> {
       action: stringFlag(args, "action"),
       repo: stringFlag(args, "repo"),
       branch: stringFlag(args, "branch"),
+      worktreePath: stringFlag(args, "worktree"),
+      tool: stringFlag(args, "tool"),
+      task: stringFlag(args, "task"),
     });
     const state = await runWorkerJob(job);
     process.stdout.write(formatWorkerJobSummary(state));

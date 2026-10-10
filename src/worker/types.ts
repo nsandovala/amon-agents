@@ -43,7 +43,7 @@ export interface WorkerStatus {
   lastHeartbeatAt: string;
 }
 
-export type WorkerJobAction = "inspect_repo" | "prepare_worktree";
+export type WorkerJobAction = "inspect_repo" | "prepare_worktree" | "run_coding_tool";
 export type WorkerJobStatus = "queued" | "running" | "done" | "failed";
 
 export interface WorkerJob {
@@ -51,6 +51,9 @@ export interface WorkerJob {
   action: WorkerJobAction;
   repo: string;
   branch?: string;
+  worktreePath?: string;
+  tool?: string;
+  task?: string;
   createdAt?: string;
 }
 
@@ -78,7 +81,32 @@ export interface PrepareWorktreeEvidence {
   timestamp: string;
 }
 
-export type WorkerJobEvidence = InspectRepoEvidence | PrepareWorktreeEvidence;
+export interface CodingToolEvidence {
+  repoPath: string;
+  worktreePath: string;
+  branch: string | null;
+  headSha: string | null;
+  gitStatusBefore: string;
+  tool: string;
+  toolVersion: string | null;
+  startedAt: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  gitStatusAfter: string | null;
+  diffStat: string | null;
+  changedFiles: string[];
+  diff: string | null;
+  worktreeHeadShaAfter: string | null;
+  worktreeBranchAfter: string | null;
+  expectedFile: string;
+  expectedContentMatched: boolean;
+  humanReview: boolean;
+}
+
+export type WorkerJobEvidence = InspectRepoEvidence | PrepareWorktreeEvidence | CodingToolEvidence;
 
 export interface WorkerJobTransition {
   status: WorkerJobStatus;
@@ -90,6 +118,9 @@ export interface WorkerJobState {
   action: string;
   repo: string;
   branch?: string;
+  worktreePath?: string;
+  tool?: string;
+  task?: string;
   status: WorkerJobStatus;
   createdAt?: string;
   queuedAt?: string;

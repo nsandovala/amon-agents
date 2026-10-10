@@ -1,9 +1,10 @@
 import { execFile as execFileCallback } from "child_process";
 import { existsSync as defaultExistsSync } from "fs";
-import { mkdir, realpath, writeFile } from "fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { resolveWorkspaceRoot } from "./host";
 import {
+  CodingToolEvidence,
   InspectRepoEvidence,
   PrepareWorktreeEvidence,
   WorkerJob,
@@ -14,7 +15,12 @@ import {
 } from "./types";
 
 const GIT_TIMEOUT_MS = 3000;
-const ALLOWED_ACTIONS = new Set<WorkerJobAction>(["inspect_repo", "prepare_worktree"]);
+const DEFAULT_TOOL_TIMEOUT_MS = 120000;
+const SUPPORTED_TOOLS = new Set(["opencode"]);
+const EXPECTED_CODING_TOOL_FILE = "sandbox/JARVIS-004D-SMOKE.md";
+const EXPECTED_CODING_TOOL_CONTENT = "# JARVIS-004D Smoke\n\nAMON Worker controlled coding tool execution succeeded.\n";
+const DEFAULT_CODING_TOOL_TASK = `Create only ${EXPECTED_CODING_TOOL_FILE} with the exact provided content:\n\n${EXPECTED_CODING_TOOL_CONTENT}\nDo not modify any other file.\nDo not run git commit, push, merge, reset, clean, checkout, install or network operations.\nStop after writing the file.`;
+const ALLOWED_ACTIONS = new Set<WorkerJobAction>(["inspect_repo", "prepare_worktree", "run_coding_tool"]);
 
 export interface JobExecResult {
   stdout: string;
@@ -25,7 +31,7 @@ export interface JobExecResult {
 export type JobExecFileFn = (
   command: string,
   args: string[],
-  options: { timeout: number }
+  options: { timeout: number; cwd?: string }
 ) => Promise<JobExecResult>;
 
 export interface WorkerJobDeps {
@@ -35,6 +41,7 @@ export interface WorkerJobDeps {
   realpath?: (path: string) => Promise<string>;
   execFile?: JobExecFileFn;
   mkdir?: (path: string, options: { recursive: true }) => Promise<unknown>;
+  readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
   persist?: (state: WorkerJobState, path: string) => Promise<void>;
   now?: () => Date;
 }
@@ -53,12 +60,18 @@ class WorkerJobExecutionError extends Error {
   }
 }
 
-function defaultExecFile(command: string, args: string[], options: { timeout: number }): Promise<JobExecResult> {
+export function defaultExecFile(command: string, args: string[], options: { timeout: number; cwd?: string }): Promise<JobExecResult> {
   return new Promise((resolvePromise) => {
-    execFileCallback(
+    const child = execFileCallback(
       command,
       args,
-      { encoding: "utf8", timeout: options.timeout, windowsHide: true },
+      {
+        encoding: "utf8",
+        timeout: options.timeout,
+        windowsHide: true,
+        cwd: options.cwd,
+        env: options.cwd ? { ...process.env, PWD: options.cwd } : process.env,
+      },
       (err, stdout, stderr) => {
         const errorWithCode = err as NodeJS.ErrnoException & { code?: number | string } | null;
         const exitCode = errorWithCode
@@ -66,9 +79,10 @@ function defaultExecFile(command: string, args: string[], options: { timeout: nu
             ? errorWithCode.code
             : 1
           : 0;
-        resolvePromise({ stdout: stdout ?? "", stderr: stderr ?? "", exitCode });
+        resolvePromise({ stdout: stdout ?? "", stderr: stderr || errorWithCode?.message || "", exitCode });
       }
     );
+    child.stdin?.end();
   });
 }
 
@@ -119,7 +133,10 @@ export function getWorkerJobPath(jobId: string, cwd = process.cwd()): string {
   return join(cwd, "outputs", "worker", "jobs", `${jobId}.json`);
 }
 
-export function createWorkerJob(input: { jobId?: unknown; action?: unknown; repo?: unknown; branch?: unknown }, now: () => Date = () => new Date()): WorkerJob {
+export function createWorkerJob(
+  input: { jobId?: unknown; action?: unknown; repo?: unknown; branch?: unknown; worktreePath?: unknown; tool?: unknown; task?: unknown },
+  now: () => Date = () => new Date()
+): WorkerJob {
   if (typeof input.jobId !== "string" || input.jobId.trim().length === 0) {
     throw new WorkerJobError("Missing required jobId");
   }
@@ -134,6 +151,9 @@ export function createWorkerJob(input: { jobId?: unknown; action?: unknown; repo
   validateJobId(jobId);
   const action = input.action.trim() as WorkerJob["action"];
   const branch = typeof input.branch === "string" ? input.branch.trim() : undefined;
+  const worktreePath = typeof input.worktreePath === "string" ? input.worktreePath.trim() : undefined;
+  const tool = typeof input.tool === "string" ? input.tool.trim() : undefined;
+  const task = typeof input.task === "string" && input.task.trim().length > 0 ? input.task.trim() : undefined;
 
   if (action === "prepare_worktree") {
     if (!branch) {
@@ -142,11 +162,26 @@ export function createWorkerJob(input: { jobId?: unknown; action?: unknown; repo
     validateBranchName(branch);
   }
 
+  if (action === "run_coding_tool") {
+    if (!worktreePath) {
+      throw new WorkerJobError("Missing required worktreePath for run_coding_tool");
+    }
+    if (!tool) {
+      throw new WorkerJobError("Missing required tool for run_coding_tool");
+    }
+    if (!SUPPORTED_TOOLS.has(tool)) {
+      throw new WorkerJobError(`Unsupported coding tool: ${tool}`);
+    }
+  }
+
   return {
     jobId,
     action,
     repo: input.repo.trim(),
     ...(branch ? { branch } : {}),
+    ...(worktreePath ? { worktreePath } : {}),
+    ...(tool ? { tool } : {}),
+    ...(task ? { task } : {}),
     createdAt: iso(now),
   };
 }
@@ -264,7 +299,7 @@ async function buildWorktreePath(options: {
   const root = getWorktreeRoot({ env: options.env, cwd: options.cwd, workspaceRoot: options.workspaceRoot });
   const rootForBoundary = options.existsSync(root) ? await options.realpath(root) : root;
   const repoName = sanitizeSegment(basename(options.repoPath));
-  const worktreePath = resolve(rootForBoundary, repoName, options.job.jobId);
+  const worktreePath = options.job.worktreePath ? resolve(options.cwd, options.job.worktreePath) : resolve(rootForBoundary, repoName, options.job.jobId);
   assertPathInside(worktreePath, rootForBoundary, `Worktree destination escapes root: ${worktreePath}`);
   return { root: rootForBoundary, path: worktreePath };
 }
@@ -288,13 +323,16 @@ function assertGitSuccess(result: JobExecResult, message: string): void {
 
 async function executeJob(
   job: WorkerJob,
-  deps: Required<Pick<WorkerJobDeps, "cwd" | "env" | "existsSync" | "realpath" | "execFile" | "mkdir" | "now">>
+  deps: Required<Pick<WorkerJobDeps, "cwd" | "env" | "existsSync" | "realpath" | "execFile" | "mkdir" | "readFile" | "now">>
 ): Promise<WorkerJobEvidence> {
   if (job.action === "inspect_repo") {
     return inspectRepo(job, deps);
   }
   if (job.action === "prepare_worktree") {
     return prepareWorktree(job, deps);
+  }
+  if (job.action === "run_coding_tool") {
+    return runCodingTool(job, deps);
   }
   throw new Error(`Unsupported worker job action: ${job.action}`);
 }
@@ -409,6 +447,243 @@ async function prepareWorktree(job: WorkerJob, deps: Required<Pick<WorkerJobDeps
   return evidence;
 }
 
+function parseToolTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.AMON_WORKER_TOOL_TIMEOUT_MS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) {
+    return DEFAULT_TOOL_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return parsed > 0 ? parsed : DEFAULT_TOOL_TIMEOUT_MS;
+}
+
+function parseChangedFiles(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseStatusChangedFiles(output: string): string[] {
+  const files = new Set<string>();
+  for (const line of output.split(/\r?\n/)) {
+    if (line.length < 4) {
+      continue;
+    }
+    const path = line.slice(3).trim();
+    if (!path) {
+      continue;
+    }
+    const renamed = path.split(" -> ").pop() ?? path;
+    files.add(renamed);
+  }
+  return [...files];
+}
+
+async function resolveWorktreeInRoot(
+  job: WorkerJob,
+  repoPath: string,
+  workspaceRoot: string,
+  deps: Required<Pick<WorkerJobDeps, "cwd" | "env" | "existsSync" | "realpath">>
+): Promise<string> {
+  if (!job.worktreePath) {
+    throw new Error("Missing required worktreePath for run_coding_tool");
+  }
+
+  const worktreePath = resolve(deps.cwd, job.worktreePath);
+  if (!deps.existsSync(worktreePath)) {
+    throw new Error(`Worktree does not exist: ${worktreePath}`);
+  }
+
+  const root = getWorktreeRoot({ env: deps.env, cwd: deps.cwd, workspaceRoot });
+  if (!deps.existsSync(root)) {
+    throw new Error(`Worktree root does not exist: ${root}`);
+  }
+
+  const [worktreeRealPath, rootRealPath, repoRealPath] = await Promise.all([
+    deps.realpath(worktreePath),
+    deps.realpath(root),
+    deps.realpath(repoPath),
+  ]);
+
+  if (!isInsideWorkspace(worktreeRealPath, rootRealPath)) {
+    throw new Error(`Worktree is outside worktree root: ${worktreeRealPath}`);
+  }
+  if (worktreeRealPath === repoRealPath) {
+    throw new Error("Worktree path must not be the main repo path");
+  }
+
+  return worktreeRealPath;
+}
+
+async function readGitString(execFile: JobExecFileFn, repo: string, args: string[], message: string): Promise<string> {
+  const result = await git(execFile, repo, args);
+  assertGitSuccess(result, message);
+  return trimOutput(result.stdout);
+}
+
+function createCodingToolEvidence(options: {
+  repoPath: string;
+  worktreePath: string;
+  branch: string | null;
+  headSha: string | null;
+  gitStatusBefore: string;
+  tool: string;
+  toolVersion: string | null;
+  startedAt: string;
+}): CodingToolEvidence {
+  return {
+    repoPath: options.repoPath,
+    worktreePath: options.worktreePath,
+    branch: options.branch,
+    headSha: options.headSha,
+    gitStatusBefore: options.gitStatusBefore,
+    tool: options.tool,
+    toolVersion: options.toolVersion,
+    startedAt: options.startedAt,
+    exitCode: null,
+    stdout: "",
+    stderr: "",
+    finishedAt: null,
+    durationMs: null,
+    gitStatusAfter: null,
+    diffStat: null,
+    changedFiles: [],
+    diff: null,
+    worktreeHeadShaAfter: null,
+    worktreeBranchAfter: null,
+    expectedFile: EXPECTED_CODING_TOOL_FILE,
+    expectedContentMatched: false,
+    humanReview: false,
+  };
+}
+
+async function captureCodingToolPostEvidence(evidence: CodingToolEvidence, deps: Required<Pick<WorkerJobDeps, "execFile">>): Promise<void> {
+  const [statusAfter, diffStat, changedFiles, diff, headAfter, branchAfter] = await Promise.all([
+    git(deps.execFile, evidence.worktreePath, ["status", "--short", "--untracked-files=all"]),
+    git(deps.execFile, evidence.worktreePath, ["diff", "--stat"]),
+    git(deps.execFile, evidence.worktreePath, ["diff", "--name-only"]),
+    git(deps.execFile, evidence.worktreePath, ["diff", "--", EXPECTED_CODING_TOOL_FILE]),
+    git(deps.execFile, evidence.worktreePath, ["rev-parse", "HEAD"]),
+    git(deps.execFile, evidence.worktreePath, ["branch", "--show-current"]),
+  ]);
+
+  for (const result of [statusAfter, diffStat, changedFiles, diff, headAfter, branchAfter]) {
+    if (result.exitCode !== 0) {
+      throw new WorkerJobExecutionError(trimOutput(result.stderr) || "Unable to capture coding tool post evidence", evidence);
+    }
+  }
+
+  evidence.gitStatusAfter = trimOutput(statusAfter.stdout);
+  evidence.diffStat = trimOutput(diffStat.stdout);
+  evidence.changedFiles = parseStatusChangedFiles(statusAfter.stdout);
+  if (evidence.changedFiles.length === 0) {
+    evidence.changedFiles = parseChangedFiles(changedFiles.stdout);
+  }
+  evidence.diff = trimOutput(diff.stdout);
+  evidence.worktreeHeadShaAfter = trimOutput(headAfter.stdout) || null;
+  evidence.worktreeBranchAfter = trimOutput(branchAfter.stdout) || null;
+}
+
+async function runCodingTool(
+  job: WorkerJob,
+  deps: Required<Pick<WorkerJobDeps, "cwd" | "env" | "existsSync" | "realpath" | "execFile" | "readFile" | "now">>
+): Promise<CodingToolEvidence> {
+  if (!job.tool) {
+    throw new Error("Missing required tool for run_coding_tool");
+  }
+  if (!SUPPORTED_TOOLS.has(job.tool)) {
+    throw new Error(`Unsupported coding tool: ${job.tool}`);
+  }
+
+  const repoPath = await resolveRepoInWorkspace(job, deps);
+  const workspaceRoot = await resolveWorkspace(deps);
+  const worktreePath = await resolveWorktreeInRoot(job, repoPath, workspaceRoot, deps);
+  const isWorktree = await git(deps.execFile, worktreePath, ["rev-parse", "--is-inside-work-tree"]);
+  if (isWorktree.exitCode !== 0 || trimOutput(isWorktree.stdout) !== "true") {
+    throw new Error(`Invalid git worktree: ${worktreePath}`);
+  }
+
+  const [branch, headSha, gitStatusBefore] = await Promise.all([
+    readGitString(deps.execFile, worktreePath, ["branch", "--show-current"], "Unable to read worktree branch"),
+    readGitString(deps.execFile, worktreePath, ["rev-parse", "HEAD"], "Unable to read worktree HEAD"),
+    readGitString(deps.execFile, worktreePath, ["status", "--short"], "Unable to read worktree status"),
+  ]);
+
+  if (!branch.startsWith("worker/")) {
+    throw new Error(`Worktree branch must start with worker/: ${branch || "(none)"}`);
+  }
+  if (!headSha) {
+    throw new Error("Worktree HEAD is empty");
+  }
+  if (gitStatusBefore.length > 0) {
+    throw new Error("Worktree must be clean before running coding tool");
+  }
+
+  const version = await deps.execFile(job.tool, ["--version"], { timeout: GIT_TIMEOUT_MS, cwd: worktreePath });
+  if (version.exitCode !== 0) {
+    throw new Error(`Coding tool unavailable: ${job.tool}`);
+  }
+
+  const startedAt = iso(deps.now);
+  const startedMs = deps.now().getTime();
+  const evidence = createCodingToolEvidence({
+    repoPath,
+    worktreePath,
+    branch,
+    headSha,
+    gitStatusBefore,
+    tool: job.tool,
+    toolVersion: trimOutput(`${version.stdout}\n${version.stderr}`) || null,
+    startedAt,
+  });
+
+  const task = job.task ?? DEFAULT_CODING_TOOL_TASK;
+  const toolResult = await deps.execFile(job.tool, ["run", "--pure", "--dir", worktreePath, task], {
+    timeout: parseToolTimeoutMs(deps.env),
+    cwd: worktreePath,
+  });
+  evidence.exitCode = toolResult.exitCode;
+  evidence.stdout = toolResult.stdout;
+  evidence.stderr = toolResult.stderr;
+  evidence.finishedAt = iso(deps.now);
+  evidence.durationMs = Math.max(0, deps.now().getTime() - startedMs);
+
+  await captureCodingToolPostEvidence(evidence, deps);
+
+  if (toolResult.exitCode !== 0) {
+    throw new WorkerJobExecutionError(`Coding tool exited with code ${toolResult.exitCode}`, evidence);
+  }
+
+  let content = "";
+  try {
+    content = await deps.readFile(join(worktreePath, EXPECTED_CODING_TOOL_FILE), "utf8");
+  } catch (err) {
+    evidence.humanReview = true;
+    throw new WorkerJobExecutionError((err as Error).message || "Expected smoke file was not created", evidence);
+  }
+
+  evidence.expectedContentMatched = content === EXPECTED_CODING_TOOL_CONTENT;
+
+  if (!evidence.expectedContentMatched) {
+    evidence.humanReview = true;
+    throw new WorkerJobExecutionError("Expected smoke file content mismatch", evidence);
+  }
+  if (evidence.changedFiles.length !== 1 || evidence.changedFiles[0] !== EXPECTED_CODING_TOOL_FILE) {
+    evidence.humanReview = true;
+    throw new WorkerJobExecutionError(`Unexpected changed files: ${evidence.changedFiles.join(", ") || "(none)"}`, evidence);
+  }
+  if (evidence.worktreeHeadShaAfter !== evidence.headSha) {
+    evidence.humanReview = true;
+    throw new WorkerJobExecutionError("Worktree HEAD changed after coding tool execution", evidence);
+  }
+  if (evidence.worktreeBranchAfter !== evidence.branch) {
+    evidence.humanReview = true;
+    throw new WorkerJobExecutionError("Worktree branch changed after coding tool execution", evidence);
+  }
+
+  return evidence;
+}
+
 export async function runWorkerJob(job: WorkerJob, deps: WorkerJobDeps = {}): Promise<WorkerJobState> {
   const cwd = deps.cwd ?? process.cwd();
   const now = deps.now ?? (() => new Date());
@@ -425,6 +700,9 @@ export async function runWorkerJob(job: WorkerJob, deps: WorkerJobDeps = {}): Pr
     action: job.action,
     repo: job.repo,
     ...(job.branch ? { branch: job.branch } : {}),
+    ...(job.worktreePath ? { worktreePath: job.worktreePath } : {}),
+    ...(job.tool ? { tool: job.tool } : {}),
+    ...(job.task ? { task: job.task } : {}),
     status: "queued",
     createdAt: job.createdAt,
     queuedAt,
@@ -452,6 +730,7 @@ export async function runWorkerJob(job: WorkerJob, deps: WorkerJobDeps = {}): Pr
       realpath: deps.realpath ?? realpath,
       execFile: deps.execFile ?? defaultExecFile,
       mkdir: deps.mkdir ?? mkdir,
+      readFile: deps.readFile ?? readFile,
       now,
     });
     state.exitCode = 0;
@@ -479,13 +758,18 @@ function isInspectRepoEvidence(evidence: WorkerJobEvidence | undefined): evidenc
 }
 
 function isPrepareWorktreeEvidence(evidence: WorkerJobEvidence | undefined): evidence is PrepareWorktreeEvidence {
-  return Boolean(evidence && "worktreePath" in evidence);
+  return Boolean(evidence && "created" in evidence);
+}
+
+function isCodingToolEvidence(evidence: WorkerJobEvidence | undefined): evidence is CodingToolEvidence {
+  return Boolean(evidence && "tool" in evidence && "changedFiles" in evidence);
 }
 
 export function formatWorkerJobSummary(state: WorkerJobState): string {
   const evidence = state.evidence;
   const inspectEvidence = isInspectRepoEvidence(evidence) ? evidence : undefined;
   const worktreeEvidence = isPrepareWorktreeEvidence(evidence) ? evidence : undefined;
+  const codingToolEvidence = isCodingToolEvidence(evidence) ? evidence : undefined;
   const lines = [
     "",
     "  AMON Worker Job",
@@ -494,15 +778,18 @@ export function formatWorkerJobSummary(state: WorkerJobState): string {
     `  ${"Action:".padEnd(10)}${state.action}`,
     `  ${"Status:".padEnd(10)}${state.status}`,
     `  ${"Repo:".padEnd(10)}${evidence?.repoPath ?? state.repo}`,
-    `  ${"Branch:".padEnd(10)}${inspectEvidence?.branch ?? worktreeEvidence?.worktreeBranch ?? state.branch ?? "n/a"}`,
-    `  ${"HEAD:".padEnd(10)}${inspectEvidence?.headSha ?? worktreeEvidence?.worktreeHeadSha ?? "n/a"}`,
-    `  ${"Dirty:".padEnd(10)}${inspectEvidence ? (inspectEvidence.dirty ? "yes" : "no") : worktreeEvidence ? "no" : "n/a"}`,
+    `  ${"Branch:".padEnd(10)}${inspectEvidence?.branch ?? worktreeEvidence?.worktreeBranch ?? codingToolEvidence?.branch ?? state.branch ?? "n/a"}`,
+    `  ${"HEAD:".padEnd(10)}${inspectEvidence?.headSha ?? worktreeEvidence?.worktreeHeadSha ?? codingToolEvidence?.headSha ?? "n/a"}`,
+    `  ${"Dirty:".padEnd(10)}${inspectEvidence ? (inspectEvidence.dirty ? "yes" : "no") : worktreeEvidence || codingToolEvidence ? "no" : "n/a"}`,
     `  ${"Duration:".padEnd(10)}${state.durationMs ?? 0}ms`,
     `  ${"ExitCode:".padEnd(10)}${state.exitCode ?? "n/a"}`,
   ];
 
-  if (worktreeEvidence) {
-    lines.splice(8, 0, `  ${"Worktree:".padEnd(10)}${worktreeEvidence.worktreePath}`);
+  if (worktreeEvidence || codingToolEvidence) {
+    lines.splice(8, 0, `  ${"Worktree:".padEnd(10)}${worktreeEvidence?.worktreePath ?? codingToolEvidence?.worktreePath}`);
+  }
+  if (codingToolEvidence) {
+    lines.splice(9, 0, `  ${"Tool:".padEnd(10)}${codingToolEvidence.tool}`);
   }
 
   if (state.error) {

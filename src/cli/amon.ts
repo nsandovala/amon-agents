@@ -14,6 +14,7 @@
  *   amon worker
  *   amon worker-job --job WORKER-SMOKE-001 --action inspect_repo --repo <ruta>
  *   amon worker-job --job JARVIS-004C --action prepare_worktree --repo <ruta> --branch worker/JARVIS-004C
+ *   amon worker-job --job JARVIS-004D-RUN-001 --action run_coding_tool --repo <ruta> --worktree <ruta> --tool opencode
  *   amon help
  */
 import dotenv from "dotenv";
@@ -55,6 +56,7 @@ Uso:
   amon worker                       (Worker Host MVP: status + heartbeat local)
   amon worker-job --job <id> --action inspect_repo --repo <ruta>
   amon worker-job --job <id> --action prepare_worktree --repo <ruta> --branch worker/<id>
+  amon worker-job --job <id> --action run_coding_tool --repo <ruta> --worktree <ruta> --tool opencode
   amon audit --repo <ruta>
   amon scan  --repo <ruta>
   amon watch                       (preview: aún no implementado)
