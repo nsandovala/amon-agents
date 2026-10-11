@@ -39,6 +39,19 @@ export function assertLoopbackHost(host: string): void {
   }
 }
 
+/**
+ * Formats a host address for use in a URL authority component.
+ * IPv6 literals contain colons and must be wrapped in square brackets
+ * per RFC 3986 §3.2.2. IPv4 addresses pass through unchanged.
+ *
+ * Examples:
+ *   "127.0.0.1" → "127.0.0.1"
+ *   "::1"       → "[::1]"
+ */
+export function formatHostForUrl(host: string): string {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
   const payload = `${JSON.stringify(body)}\n`;
   res.writeHead(statusCode, {
@@ -61,7 +74,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, options:
       return;
     }
 
-    const url = new URL(req.url ?? "/", `http://${options.host ?? DEFAULT_OPS_HOST}`);
+    const url = new URL(req.url ?? "/", `http://${formatHostForUrl(options.host ?? DEFAULT_OPS_HOST)}`);
     if (url.pathname !== "/api/ops/snapshot") {
       sendJson(res, 404, { error: "not_found" });
       return;

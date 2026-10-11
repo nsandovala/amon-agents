@@ -7,7 +7,7 @@ import { Server } from "http";
 import { GuardianReview } from "../guardian/types";
 import { CodingToolEvidence, WorkerJobState, WorkerStatus } from "../worker/types";
 import { buildOperationalSnapshot } from "./projection";
-import { assertLoopbackHost, DEFAULT_OPS_HOST, createOpsServer, OpsServerHostError, startOpsServer } from "./server";
+import { assertLoopbackHost, DEFAULT_OPS_HOST, createOpsServer, formatHostForUrl, OpsServerHostError, startOpsServer } from "./server";
 import { opsServerCommand } from "../commands/ops-server";
 
 const tempDirs: string[] = [];
@@ -345,6 +345,39 @@ describe("assertLoopbackHost — unit (synchronous, no I/O)", () => {
   });
 });
 
+// ─── SEC-OPS-002: IPv6 URL formatting ────────────────────────────────────────
+
+describe("formatHostForUrl — unit (synchronous, no I/O)", () => {
+  it("leaves IPv4 address unchanged", () => {
+    expect(formatHostForUrl("127.0.0.1")).toBe("127.0.0.1");
+  });
+
+  it("wraps ::1 in square brackets per RFC 3986 §3.2.2", () => {
+    expect(formatHostForUrl("::1")).toBe("[::1]");
+  });
+
+  it("DEFAULT_OPS_HOST passes through unchanged (IPv4 default)", () => {
+    expect(formatHostForUrl(DEFAULT_OPS_HOST)).toBe(DEFAULT_OPS_HOST);
+  });
+
+  it("produces a parseable URL authority for ::1", () => {
+    const url = new URL(`http://${formatHostForUrl("::1")}:4785/path`);
+    // WHATWG URL API returns hostname with brackets for IPv6: "[::1]"
+    expect(url.hostname).toBe("[::1]");
+    expect(url.port).toBe("4785");
+  });
+
+  it("produces a parseable URL authority for 127.0.0.1", () => {
+    const url = new URL(`http://${formatHostForUrl("127.0.0.1")}:4785/path`);
+    expect(url.hostname).toBe("127.0.0.1");
+    expect(url.port).toBe("4785");
+  });
+
+  it("unbracketed ::1 would throw if used directly in new URL() (regression proof)", () => {
+    expect(() => new URL("http://::1:4785/path")).toThrow();
+  });
+});
+
 describe("startOpsServer — loopback enforcement (integration)", () => {
   it("starts on 127.0.0.1 (explicit IPv4 loopback)", async () => {
     const started = await startOpsServer({ host: "127.0.0.1", port: 0 });
@@ -368,6 +401,29 @@ describe("startOpsServer — loopback enforcement (integration)", () => {
       expect(started.host).toBe("::1");
     } finally {
       await started.close();
+    }
+  });
+
+  it("snapshot endpoint is reachable via bracketed IPv6 URL when IPv6 is available", async () => {
+    const available = await new Promise<boolean>((resolve) => {
+      const probe = createServer();
+      probe.once("error", () => resolve(false));
+      probe.listen(0, "::1", () => { probe.close(); resolve(true); });
+    });
+    if (!available) return;
+
+    const cwd = await mkdtemp(join(tmpdir(), "amon-ipv6-"));
+    let started: Awaited<ReturnType<typeof startOpsServer>> | undefined;
+    try {
+      started = await startOpsServer({ host: "::1", port: 0, cwd });
+      // RFC 3986 §3.2.2: IPv6 literals in URL authority must use bracket notation
+      const res = await fetch(`http://[::1]:${started.port}/api/ops/snapshot`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as { systemStatus: string };
+      expect(body.systemStatus).toBe("ok");
+    } finally {
+      await started?.close();
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 
