@@ -11,6 +11,12 @@
  *   amon push --task TASK-ID
  *   amon status
  *   amon doctor
+ *   amon worker
+ *   amon worker-job --job WORKER-SMOKE-001 --action inspect_repo --repo <ruta>
+ *   amon worker-job --job JARVIS-004C --action prepare_worktree --repo <ruta> --branch worker/JARVIS-004C
+ *   amon worker-job --job JARVIS-004D-RUN-001 --action run_coding_tool --repo <ruta> --worktree <ruta> --tool opencode
+ *   amon guardian-review --review GUARDIAN-004E-SMOKE-001 --job JARVIS-004D-RUN-004
+ *   amon ops-server [--host 127.0.0.1] [--port 4785]
  *   amon help
  */
 import dotenv from "dotenv";
@@ -18,12 +24,16 @@ dotenv.config({ path: ".env.local" });
 
 import { auditCommand } from "../commands/audit";
 import { doctorCommand } from "../commands/doctor";
+import { guardianReviewCommand } from "../commands/guardian-review";
 import { historyCommand } from "../commands/history";
+import { opsServerCommand } from "../commands/ops-server";
 import { pushCommand } from "../commands/push";
 import { runCommand } from "../commands/run";
 import { scanCommand } from "../commands/scan";
 import { statusCommand } from "../commands/status";
 import { watchCommand } from "../commands/watch";
+import { workerJobCommand } from "../commands/worker-job";
+import { workerCommand } from "../commands/worker";
 import { newRunId, withCommandEvents } from "../events/event-emitter";
 import { error, setLevel } from "../utils/logger";
 import { parseArgs, ParsedArgs } from "./parse-args";
@@ -47,6 +57,12 @@ Uso:
   amon status
   amon history [--limit N]
   amon doctor
+  amon worker                       (Worker Host MVP: status + heartbeat local)
+  amon worker-job --job <id> --action inspect_repo --repo <ruta>
+  amon worker-job --job <id> --action prepare_worktree --repo <ruta> --branch worker/<id>
+  amon worker-job --job <id> --action run_coding_tool --repo <ruta> --worktree <ruta> --tool opencode
+  amon guardian-review --review <id> --job <worker-job-id>
+  amon ops-server [--host 127.0.0.1] [--port 4785]
   amon audit --repo <ruta>
   amon scan  --repo <ruta>
   amon watch                       (preview: aún no implementado)
@@ -112,7 +128,7 @@ async function main(): Promise<number> {
 
   switch (command) {
     case "run":
-      return dispatch("run", runCommand);
+      return dispatch("run", (args) => runCommand(args, { runId }));
     case "push":
       return dispatch("push", pushCommand);
     case "status":
@@ -127,6 +143,14 @@ async function main(): Promise<number> {
       return dispatch("scan", scanCommand);
     case "watch":
       return dispatch("watch", () => watchCommand());
+    case "worker":
+      return workerCommand(parsed, { runId });
+    case "worker-job":
+      return workerJobCommand(parsed);
+    case "guardian-review":
+      return guardianReviewCommand(parsed);
+    case "ops-server":
+      return opsServerCommand(parsed);
     default:
       error(`[amon] Comando desconocido: "${command}"`);
       printHelp();

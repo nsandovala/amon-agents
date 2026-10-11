@@ -27,7 +27,14 @@ function asString(value: string | boolean | undefined): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export async function runCommand(args: ParsedArgs): Promise<number> {
+export interface RunCommandOptions {
+  runId?: string;
+}
+
+export async function runCommand(
+  args: ParsedArgs,
+  options: RunCommandOptions = {}
+): Promise<number> {
   const description = args.positional.join(" ").trim();
   if (description.length === 0) {
     error("[amon run] Falta la descripción de la tarea.");
@@ -48,7 +55,7 @@ export async function runCommand(args: ParsedArgs): Promise<number> {
     return 1;
   }
 
-  const runId = newRunId();
+  const runId = options.runId ?? newRunId();
   info(`[amon run] Iniciando flujo para tarea ${taskId} de tipo ${taskType}`);
   await emitAmonEvent({
     runId,

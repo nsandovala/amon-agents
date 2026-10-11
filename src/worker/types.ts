@@ -1,0 +1,134 @@
+export type WorkerAvailabilityStatus = "online" | "offline";
+
+export interface WorkerResources {
+  cpuCount: number;
+  totalMemoryMb: number;
+  freeMemoryMb: number;
+}
+
+export interface WorkerWorkspace {
+  root: string | null;
+  available: boolean;
+}
+
+export interface WorkerToolStatus {
+  name: string;
+  available: boolean;
+  version?: string;
+  path?: string;
+}
+
+export interface WorkerOllamaStatus {
+  available: boolean;
+  reachable: boolean;
+  endpoint: string;
+  activeModel: string;
+  installedModels: string[];
+  detail?: string;
+}
+
+export interface WorkerStatus {
+  workerId: string;
+  hostname: string;
+  status: WorkerAvailabilityStatus;
+  platform: NodeJS.Platform;
+  arch: string;
+  nodeVersion: string;
+  cwd: string;
+  resources: WorkerResources;
+  workspace: WorkerWorkspace;
+  tools: WorkerToolStatus[];
+  ollama: WorkerOllamaStatus;
+  startedAt: string;
+  lastHeartbeatAt: string;
+}
+
+export type WorkerJobAction = "inspect_repo" | "prepare_worktree" | "run_coding_tool";
+export type WorkerJobStatus = "queued" | "running" | "done" | "failed";
+
+export interface WorkerJob {
+  jobId: string;
+  action: WorkerJobAction;
+  repo: string;
+  branch?: string;
+  worktreePath?: string;
+  tool?: string;
+  task?: string;
+  createdAt?: string;
+}
+
+export interface InspectRepoEvidence {
+  repoPath: string;
+  repoExists: boolean;
+  isGitRepo: boolean;
+  branch: string | null;
+  headSha: string | null;
+  gitStatusShort: string;
+  gitStatusBranch: string;
+  dirty: boolean;
+  timestamp: string;
+}
+
+export interface PrepareWorktreeEvidence {
+  repoPath: string;
+  sourceBranch: string | null;
+  sourceHeadSha: string | null;
+  worktreePath: string;
+  worktreeBranch: string | null;
+  worktreeHeadSha: string | null;
+  worktreeStatusShort: string | null;
+  created: boolean;
+  timestamp: string;
+}
+
+export interface CodingToolEvidence {
+  repoPath: string;
+  worktreePath: string;
+  branch: string | null;
+  headSha: string | null;
+  gitStatusBefore: string;
+  tool: string;
+  toolVersion: string | null;
+  startedAt: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  gitStatusAfter: string | null;
+  diffStat: string | null;
+  changedFiles: string[];
+  diff: string | null;
+  worktreeHeadShaAfter: string | null;
+  worktreeBranchAfter: string | null;
+  expectedFile: string;
+  expectedContentMatched: boolean;
+  humanReview: boolean;
+}
+
+export type WorkerJobEvidence = InspectRepoEvidence | PrepareWorktreeEvidence | CodingToolEvidence;
+
+export interface WorkerJobTransition {
+  status: WorkerJobStatus;
+  at: string;
+}
+
+export interface WorkerJobState {
+  jobId: string;
+  action: string;
+  repo: string;
+  branch?: string;
+  worktreePath?: string;
+  tool?: string;
+  task?: string;
+  status: WorkerJobStatus;
+  createdAt?: string;
+  queuedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  exitCode?: number;
+  error?: string;
+  evidence?: WorkerJobEvidence;
+  transitions: WorkerJobTransition[];
+}
