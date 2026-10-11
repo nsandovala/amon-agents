@@ -1,11 +1,14 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { createServer } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Server } from "http";
 import { GuardianReview } from "../guardian/types";
 import { CodingToolEvidence, WorkerJobState, WorkerStatus } from "../worker/types";
 import { buildOperationalSnapshot } from "./projection";
-import { DEFAULT_OPS_HOST, createOpsServer, startOpsServer } from "./server";
+import { assertLoopbackHost, DEFAULT_OPS_HOST, createOpsServer, OpsServerHostError, startOpsServer } from "./server";
+import { opsServerCommand } from "../commands/ops-server";
 
 const tempDirs: string[] = [];
 
@@ -278,6 +281,185 @@ describe("ops HTTP server", () => {
       expect([404, 405]).toContain(response.status);
     } finally {
       await started.close();
+    }
+  });
+});
+
+// ─── SEC-OPS-001: Loopback enforcement ───────────────────────────────────────
+
+describe("assertLoopbackHost — unit (synchronous, no I/O)", () => {
+  it("accepts 127.0.0.1 exactly", () => {
+    expect(() => assertLoopbackHost("127.0.0.1")).not.toThrow();
+  });
+
+  it("accepts ::1 exactly", () => {
+    expect(() => assertLoopbackHost("::1")).not.toThrow();
+  });
+
+  it("rejects 0.0.0.0 (IPv4 wildcard)", () => {
+    expect(() => assertLoopbackHost("0.0.0.0")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects :: (IPv6 wildcard)", () => {
+    expect(() => assertLoopbackHost("::")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects 192.168.1.100 (LAN)", () => {
+    expect(() => assertLoopbackHost("192.168.1.100")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects 10.0.0.1 (private)", () => {
+    expect(() => assertLoopbackHost("10.0.0.1")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects 172.16.0.1 (private)", () => {
+    expect(() => assertLoopbackHost("172.16.0.1")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects 8.8.8.8 (public)", () => {
+    expect(() => assertLoopbackHost("8.8.8.8")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects 'localhost' (hostname resolution not permitted)", () => {
+    expect(() => assertLoopbackHost("localhost")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects 127.0.0.2 (non-canonical loopback, not in allowlist)", () => {
+    expect(() => assertLoopbackHost("127.0.0.2")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects ::ffff:127.0.0.1 (IPv4-mapped IPv6)", () => {
+    expect(() => assertLoopbackHost("::ffff:127.0.0.1")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects '  127.0.0.1  ' (no silent normalization)", () => {
+    expect(() => assertLoopbackHost("  127.0.0.1  ")).toThrow(OpsServerHostError);
+  });
+
+  it("rejects empty string", () => {
+    expect(() => assertLoopbackHost("")).toThrow(OpsServerHostError);
+  });
+
+  it("error message includes the rejected host value", () => {
+    expect(() => assertLoopbackHost("0.0.0.0")).toThrow(/"0\.0\.0\.0"/);
+  });
+});
+
+describe("startOpsServer — loopback enforcement (integration)", () => {
+  it("starts on 127.0.0.1 (explicit IPv4 loopback)", async () => {
+    const started = await startOpsServer({ host: "127.0.0.1", port: 0 });
+    try {
+      expect(started.host).toBe("127.0.0.1");
+    } finally {
+      await started.close();
+    }
+  });
+
+  it("starts on ::1 (IPv6 loopback) when IPv6 is available", async () => {
+    const available = await new Promise<boolean>((resolve) => {
+      const probe = createServer();
+      probe.once("error", () => resolve(false));
+      probe.listen(0, "::1", () => { probe.close(); resolve(true); });
+    });
+    if (!available) return;
+
+    const started = await startOpsServer({ host: "::1", port: 0 });
+    try {
+      expect(started.host).toBe("::1");
+    } finally {
+      await started.close();
+    }
+  });
+
+  it("rejects 0.0.0.0 as a Promise rejection before server starts", async () => {
+    await expect(startOpsServer({ host: "0.0.0.0", port: 0 })).rejects.toThrow(OpsServerHostError);
+  });
+
+  it("rejects :: (IPv6 wildcard) as a Promise rejection", async () => {
+    await expect(startOpsServer({ host: "::", port: 0 })).rejects.toThrow(OpsServerHostError);
+  });
+
+  it("rejects a LAN address as a Promise rejection", async () => {
+    await expect(startOpsServer({ host: "192.168.1.1", port: 0 })).rejects.toThrow(OpsServerHostError);
+  });
+
+  it("rejects 'localhost' as a Promise rejection", async () => {
+    await expect(startOpsServer({ host: "localhost", port: 0 })).rejects.toThrow(OpsServerHostError);
+  });
+
+  it("server.listen is never reached for a rejected host", async () => {
+    const listenSpy = vi.spyOn(Server.prototype, "listen");
+    try {
+      await expect(
+        startOpsServer({ host: "0.0.0.0", port: 0 })
+      ).rejects.toThrow(OpsServerHostError);
+      expect(listenSpy).not.toHaveBeenCalled();
+    } finally {
+      listenSpy.mockRestore();
+    }
+  });
+
+  it("snapshot endpoint remains reachable on allowed host after fix", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "amon-sec-"));
+    let started: Awaited<ReturnType<typeof startOpsServer>> | undefined;
+    try {
+      started = await startOpsServer({ cwd, port: 0 });
+      const res = await fetch(`http://${started.host}:${started.port}/api/ops/snapshot`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as { systemStatus: string };
+      expect(body.systemStatus).toBe("ok");
+    } finally {
+      await started?.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── SEC-OPS-001: CLI smoke ───────────────────────────────────────────────────
+
+describe("amon ops-server CLI smoke", () => {
+  it("default host constant is 127.0.0.1", () => {
+    expect(DEFAULT_OPS_HOST).toBe("127.0.0.1");
+  });
+
+  it("--host 0.0.0.0 returns exit code 1 and never starts a listener", async () => {
+    const listenSpy = vi.spyOn(Server.prototype, "listen");
+    try {
+      const code = await opsServerCommand({ flags: { host: "0.0.0.0", port: "0" }, positional: [] });
+      expect(code).toBe(1);
+      expect(listenSpy).not.toHaveBeenCalled();
+    } finally {
+      listenSpy.mockRestore();
+    }
+  });
+
+  it("--host :: returns exit code 1", async () => {
+    const code = await opsServerCommand({ flags: { host: "::", port: "0" }, positional: [] });
+    expect(code).toBe(1);
+  });
+
+  it("--host 192.168.1.1 returns exit code 1", async () => {
+    const code = await opsServerCommand({ flags: { host: "192.168.1.1", port: "0" }, positional: [] });
+    expect(code).toBe(1);
+  });
+
+  it("snapshot response schema is preserved on default host", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "amon-cli-"));
+    let started: Awaited<ReturnType<typeof startOpsServer>> | undefined;
+    try {
+      started = await startOpsServer({ cwd, port: 0 });
+      const res = await fetch(`http://${started.host}:${started.port}/api/ops/snapshot`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(Object.keys(body)).toEqual(["generatedAt", "systemStatus", "workers", "jobs", "guardianReviews", "agents"]);
+      expect(body.systemStatus).toBe("ok");
+      expect(Array.isArray(body.workers)).toBe(true);
+      expect(Array.isArray(body.jobs)).toBe(true);
+      expect(Array.isArray(body.guardianReviews)).toBe(true);
+      expect(Array.isArray(body.agents)).toBe(true);
+    } finally {
+      await started?.close();
+      await rm(cwd, { recursive: true, force: true });
     }
   });
 });
