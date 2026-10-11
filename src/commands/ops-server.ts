@@ -1,5 +1,5 @@
 import { ParsedArgs } from "../cli/parse-args";
-import { DEFAULT_OPS_HOST, DEFAULT_OPS_PORT, startOpsServer } from "../ops/server";
+import { DEFAULT_OPS_HOST, DEFAULT_OPS_PORT, formatHostForUrl, startOpsServer } from "../ops/server";
 import { error } from "../utils/logger";
 
 function stringFlag(args: ParsedArgs, key: string): string | undefined {
@@ -19,7 +19,7 @@ export async function opsServerCommand(args: ParsedArgs): Promise<number> {
   try {
     const host = stringFlag(args, "host") ?? DEFAULT_OPS_HOST;
     const started = await startOpsServer({ host, port: portFlag(args) });
-    process.stdout.write(`AMON Ops snapshot server listening on http://${started.host}:${started.port}/api/ops/snapshot\n`);
+    process.stdout.write(`AMON Ops snapshot server listening on http://${formatHostForUrl(started.host)}:${started.port}/api/ops/snapshot\n`);
 
     return new Promise<number>((resolve) => {
       let shuttingDown = false;
