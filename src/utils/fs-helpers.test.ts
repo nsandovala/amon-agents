@@ -200,7 +200,7 @@ describe("atomicWriteFile — concurrency", () => {
     const dir = await makeTempDir();
     const destPath = join(dir, "state.json");
 
-    await Promise.allSettled([
+    await Promise.all([
       atomicWriteFile(destPath, '{"writer":"A"}\n'),
       atomicWriteFile(destPath, '{"writer":"B"}\n'),
     ]);
@@ -215,7 +215,7 @@ describe("atomicWriteFile — concurrency", () => {
     const dir = await makeTempDir();
     const destPath = join(dir, "state.json");
 
-    await Promise.allSettled([
+    await Promise.all([
       atomicWriteFile(destPath, '{"writer":"A"}\n'),
       atomicWriteFile(destPath, '{"writer":"B"}\n'),
       atomicWriteFile(destPath, '{"writer":"C"}\n'),
