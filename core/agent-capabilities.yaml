@@ -1,0 +1,22 @@
+version: 1
+# Declarative planning capabilities. Availability is checked against AGENT_REGISTRY.
+# These entries never grant permissions or claim provider health / product execution.
+agents:
+  architect:
+    capabilities: [architecture-plan, plan-review]
+    actions: [diagnose]
+  security:
+    capabilities: [security-review, plan-review]
+    actions: [diagnose, verify]
+  qa:
+    capabilities: [plan-qa, plan-review]
+    actions: [verify]
+  ops:
+    capabilities: [readiness-assessment, plan-review]
+    actions: [diagnose, verify]
+  designer:
+    capabilities: [ui-design]
+    actions: [design]
+  dev:
+    capabilities: [code-implementation]
+    actions: [implement]

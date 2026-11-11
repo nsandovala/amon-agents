@@ -17,7 +17,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "demo:mission": "ts-node src/mission/demo/cli.ts"
+    "demo:mission": "ts-node src/mission/demo/cli.ts",
+    "demo:assignment": "ts-node src/mission/demo/assignment-cli.ts"
   },
   "keywords": [
     "amon",
