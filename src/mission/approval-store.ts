@@ -91,6 +91,33 @@ export class ApprovalStore {
 
   snapshots() { return replayApprovals(this.history()); }
 
+  /** Trusted host artifacts, immutable and bound to their logical name. No arbitrary paths.
+   * A partial write remains invalid and is never silently overwritten or repaired.
+   */
+  writeExecutionRecord(name: string, value: unknown): void {
+    if (!/^(fixture|attempt|result)-[a-f0-9-]{36}$/.test(name)) throw new Error('INVALID_EXECUTION_RECORD_NAME');
+    const payload = JSON.stringify(value);
+    if (typeof payload !== 'string') throw new Error('INVALID_EXECUTION_RECORD');
+    const mac = createHmac('sha256', this.key()).update(name + '\0' + payload).digest('hex');
+    const data = JSON.stringify({payload, mac}) + '\n';
+    if (Buffer.byteLength(data) > LIMIT) throw new Error('EXECUTION_RECORD_TOO_LARGE');
+    writeExclusive(this.file(name + '.json'), data);
+    const fd = fs.openSync(this.directory, fs.constants.O_RDONLY);
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  }
+
+  readExecutionRecord(name: string): unknown {
+    if (!/^(fixture|attempt|result)-[a-f0-9-]{36}$/.test(name)) throw new Error('INVALID_EXECUTION_RECORD_NAME');
+    const key = this.key();
+    try {
+      const e = JSON.parse(readPrivate(this.file(name + '.json')).toString('utf8'));
+      if (!e || Object.keys(e).sort().join(',') !== 'mac,payload' || typeof e.payload !== 'string' ||
+          typeof e.mac !== 'string' || !/^[a-f0-9]{64}$/.test(e.mac) ||
+          !timingSafeEqual(createHmac('sha256', key).update(name + '\0' + e.payload).digest(), Buffer.from(e.mac, 'hex'))) throw new Error();
+      return JSON.parse(e.payload);
+    } catch { throw new Error('EXECUTION_RECORD_INVALID'); }
+  }
+
   /** Trusted host only. The authentication adapter constructs the event after confirmation.
    * Exclusive lock + expected sequence prevent lost updates and stale confirmations.
    */
