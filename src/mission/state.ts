@@ -39,7 +39,14 @@ function validateContext(m: MissionContract, c: Context, checks: Check[]): void 
     requireThat(e && e.missionId === m.missionId && e.verifiedBaseSha === m.baseSha && e.verifiedBranch === m.branch && Date.parse(e.observedAt) <= c.now.getTime(), 'INVALID_EVIDENCE_REFERENCE');
   }
 }
-function authorized(m: MissionContract, id: string, action: Action, c: Context, checks: Check[]): AuthorizationContract {
+/** Private to one synchronous decision; successful completion is reusable only in this snapshot. */
+interface Decision {
+  checks: Check[];
+  planHash: string;
+  completed: Set<string>;
+}
+function authorized(m: MissionContract, id: string, action: Action, c: Context, d: Decision): AuthorizationContract {
+  const checks = d.checks;
   const requireThat = checker(checks, id, action);
   const a = m.assignments.find(a => a.assignmentId === id);
   requireThat(a, 'UNKNOWN_ASSIGNMENT');
@@ -55,20 +62,22 @@ function authorized(m: MissionContract, id: string, action: Action, c: Context, 
   requireThat(grants.length === 1, 'AUTHORIZATION_MISSING_OR_AMBIGUOUS', {activeCount: grants.length});
   const g = grants[0];
   requireThat(g.decision === 'approved' && c.approverIds.includes(g.approvedBy) && m.authorizationPolicy.approverIds.includes(g.approvedBy), 'NOT_APPROVED');
-  requireThat(g.planVersion === m.planVersion && g.planHash === planHash(m) && g.scope === a.scope, 'PLAN_OR_SCOPE_CHANGED', {versionMatches: g.planVersion === m.planVersion, hashMatches: g.planHash === planHash(m), scopeMatches: g.scope === a.scope});
+  requireThat(g.planVersion === m.planVersion && g.planHash === d.planHash && g.scope === a.scope, 'PLAN_OR_SCOPE_CHANGED', {versionMatches: g.planVersion === m.planVersion, hashMatches: g.planHash === d.planHash, scopeMatches: g.scope === a.scope});
   requireThat(true, 'AUTHORIZATION_SELECTED', {authorizationId: g.authorizationId, approvedAt: g.approvedAt, expiresAt: g.expiresAt});
   return g;
 }
-function completed(m: MissionContract, id: string, c: Context, checks: Check[]): void {
+function completed(m: MissionContract, id: string, c: Context, d: Decision): void {
+  if (d.completed.has(id)) return;
+  const checks = d.checks;
   const requireThat = checker(checks, id);
   const a = m.assignments.find(a => a.assignmentId === id)!;
   requireThat(a.allowedActions.length > 0, 'NO_ACTIONS');
   for (const action of a.allowedActions) {
-    const grant = authorized(m, id, action, c, checks);
+    const grant = authorized(m, id, action, c, d);
     const candidates = a.evidenceRefs.flatMap(ref => c.evidence.filter(e => e.evidenceReference === ref).map(e => ({
       evidenceReference: e.evidenceReference,
       sourceMatches: e.source === 'assignment', assignmentMatches: e.assignmentId === id,
-      missionMatches: e.missionId === m.missionId, planMatches: e.planHash === planHash(m),
+      missionMatches: e.missionId === m.missionId, planMatches: e.planHash === d.planHash,
       actionMatches: e.action === action, done: e.status === 'done',
       baseMatches: e.verifiedBaseSha === m.baseSha, branchMatches: e.verifiedBranch === m.branch,
       afterApproval: Date.parse(e.observedAt) >= Date.parse(grant.approvedAt!),
@@ -79,40 +88,44 @@ function completed(m: MissionContract, id: string, c: Context, checks: Check[]):
   }
   for (const dep of a.dependencies) {
     requireThat(m.assignments.find(a => a.assignmentId === dep)?.status === 'completed', 'DEPENDENCY_INCOMPLETE', {dependencyId: dep, status: m.assignments.find(a => a.assignmentId === dep)?.status});
-    completed(m, dep, c, checks);
+    completed(m, dep, c, d);
   }
+  // Add only after every action, evidence and transitive dependency has passed.
+  d.completed.add(id);
 }
-function readiness(m: MissionContract, id: string, c: Context, checks: Check[]): void {
+function readiness(m: MissionContract, id: string, c: Context, d: Decision): void {
+  const checks = d.checks;
   const requireThat = checker(checks, id);
   const a = m.assignments.find(a => a.assignmentId === id)!;
   requireThat(a.allowedActions.length > 0, 'NO_ACTIONS');
-  a.allowedActions.forEach(action => authorized(m, id, action, c, checks));
+  a.allowedActions.forEach(action => authorized(m, id, action, c, d));
   for (const dep of a.dependencies) {
     requireThat(m.assignments.find(a => a.assignmentId === dep)?.status === 'completed', 'DEPENDENCY_INCOMPLETE', {dependencyId: dep, status: m.assignments.find(a => a.assignmentId === dep)?.status});
-    completed(m, dep, c, checks);
+    completed(m, dep, c, d);
   }
 }
 /** Recheck both mission-wide and assignment claims; snapshots carry no approval authority. */
-function validateClaims(m: MissionContract, c: Context, checks: Check[]): void {
+function validateClaims(m: MissionContract, c: Context, d: Decision): void {
+  const checks = d.checks;
   const requireThat = checker(checks);
   if (['approved','ready','completed'].includes(m.status)) {
     for (const a of m.assignments) {
       checker(checks, a.assignmentId)(a.allowedActions.length > 0, 'NO_ACTIONS');
-      a.allowedActions.forEach(action => authorized(m, a.assignmentId, action, c, checks));
-      if (m.status === 'ready' || m.status === 'completed') readiness(m, a.assignmentId, c, checks);
+      a.allowedActions.forEach(action => authorized(m, a.assignmentId, action, c, d));
+      if (m.status === 'ready' || m.status === 'completed') readiness(m, a.assignmentId, c, d);
       if (m.status === 'completed') {
         checker(checks, a.assignmentId)(a.status === 'completed', 'ASSIGNMENT_INCOMPLETE');
-        completed(m, a.assignmentId, c, checks);
+        completed(m, a.assignmentId, c, d);
       }
     }
   }
   for (const a of m.assignments) {
-    if (a.status === 'completed') completed(m, a.assignmentId, c, checks);
+    if (a.status === 'completed') completed(m, a.assignmentId, c, d);
     if (a.status === 'approved' || a.status === 'ready') {
       checker(checks, a.assignmentId)(a.allowedActions.length > 0, 'NO_ACTIONS');
-      a.allowedActions.forEach(action => authorized(m, a.assignmentId, action, c, checks));
+      a.allowedActions.forEach(action => authorized(m, a.assignmentId, action, c, d));
     }
-    if (a.status === 'ready') readiness(m, a.assignmentId, c, checks);
+    if (a.status === 'ready') readiness(m, a.assignmentId, c, d);
   }
 }
 /** Fail closed and return a blocked snapshot. Never mutates input or worker jobs. */
@@ -122,21 +135,22 @@ export function transition(input: unknown, target: State, c: Context, assignment
   let m: MissionContract | undefined;
   try {
     m = parseMission(input); validateContext(m, c, checks);
+    const d: Decision = {checks, planHash: planHash(m), completed: new Set()};
     const entity = assignmentId === undefined ? m : m.assignments.find(a => a.assignmentId === assignmentId);
     requireThat(entity, 'UNKNOWN_ASSIGNMENT');
     if (!entity) throw new Error('UNKNOWN_ASSIGNMENT');
     requireThat(transitions[entity.status].includes(target), 'INVALID_TRANSITION', {from: entity.status, target});
-    validateClaims(m, c, checks);
+    validateClaims(m, c, d);
     const selected = assignmentId ? [m.assignments.find(a => a.assignmentId === assignmentId)!] : m.assignments;
     if (['approved','ready','completed'].includes(target)) {
       requireThat(!assignmentId || ['approved','ready'].includes(m.status), 'MISSION_NOT_APPROVED');
       for (const a of selected) {
         checker(checks, a.assignmentId)(a.allowedActions.length > 0, 'NO_ACTIONS');
-        a.allowedActions.forEach(action => authorized(m!, a.assignmentId, action, c, checks));
-        if (target === 'ready' || target === 'completed') readiness(m, a.assignmentId, c, checks);
+        a.allowedActions.forEach(action => authorized(m!, a.assignmentId, action, c, d));
+        if (target === 'ready' || target === 'completed') readiness(m, a.assignmentId, c, d);
         if (target === 'completed') {
           checker(checks, a.assignmentId)(!!assignmentId || a.status === 'completed', 'ASSIGNMENT_INCOMPLETE');
-          completed(m, a.assignmentId, c, checks);
+          completed(m, a.assignmentId, c, d);
         }
       }
     }
@@ -154,10 +168,11 @@ export function canPerform(input: unknown, assignmentId: string, action: Action,
   let m: MissionContract | undefined;
   try {
     m = parseMission(input); validateContext(m, c, checks);
+    const d: Decision = {checks, planHash: planHash(m), completed: new Set()};
     requireThat(['approved','ready'].includes(m.status), 'MISSION_NOT_APPROVED');
     requireThat(m.assignments.find(a => a.assignmentId === assignmentId)?.status === 'ready', 'ASSIGNMENT_NOT_READY');
-    authorized(m, assignmentId, action, c, checks); readiness(m, assignmentId, c, checks);
-    validateClaims(m, c, checks);
+    authorized(m, assignmentId, action, c, d); readiness(m, assignmentId, c, d);
+    validateClaims(m, c, d);
     return {ok: true, status: 'ready', mission: m, errors: [], checks};
   } catch (err) {
     if (m) m.status = 'blocked';
