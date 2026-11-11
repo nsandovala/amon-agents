@@ -20,7 +20,8 @@
     "demo:mission": "ts-node src/mission/demo/cli.ts",
     "mission:approval": "ts-node src/mission/approval-cli.ts",
     "demo:assignment": "ts-node src/mission/demo/assignment-cli.ts",
-    "mission:supervised": "ts-node src/mission/supervised-cli.ts"
+    "mission:supervised": "ts-node src/mission/supervised-cli.ts",
+    "mission:export-board": "ts-node src/mission/board-export-cli.ts"
   },
   "keywords": [
     "amon",
