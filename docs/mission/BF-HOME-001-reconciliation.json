@@ -1,0 +1,162 @@
+{
+  "mission": {
+    "schemaVersion": "0.1",
+    "missionId": "BF-HOME-001",
+    "taskType": "ui_change",
+    "objective": "Planificar rediseño Home de BracketFlow sin ejecutarlo",
+    "repositoryAlias": "BracketFlow",
+    "baseSha": "e80aae09009f64d228a613ab7ac079882cfbd0b4",
+    "branch": "worker/BF-HOME-001",
+    "status": "awaiting_approval",
+    "planVersion": 1,
+    "assignments": [
+      {
+        "assignmentId": "BF-HOME-001-architect",
+        "missionId": "BF-HOME-001",
+        "role": "architect",
+        "goal": "Diagnóstico técnico sin escritura",
+        "scope": "BF-HOME-001-home",
+        "dependencies": [],
+        "expectedOutputs": {
+          "goal": "Diagnóstico técnico sin escritura",
+          "scope": "Home de BracketFlow; sin ejecución en este sprint",
+          "files_to_touch": [],
+          "plan": [
+            "Diagnóstico técnico sin escritura"
+          ],
+          "risks": [
+            "Requiere autorización formal y evidencia"
+          ],
+          "validations": [
+            "Revisión de Nelson"
+          ],
+          "done_when": [
+            "Entregable revisado con evidencia"
+          ]
+        },
+        "allowedActions": [],
+        "status": "planned",
+        "evidenceRefs": []
+      },
+      {
+        "assignmentId": "BF-HOME-001-designer",
+        "missionId": "BF-HOME-001",
+        "role": "designer",
+        "goal": "Propuesta UX/UI pendiente de ejecutor",
+        "scope": "BF-HOME-001-home",
+        "dependencies": [
+          "BF-HOME-001-architect"
+        ],
+        "expectedOutputs": {
+          "goal": "Propuesta UX/UI pendiente de ejecutor",
+          "scope": "Home de BracketFlow; sin ejecución en este sprint",
+          "files_to_touch": [],
+          "plan": [
+            "Propuesta UX/UI pendiente de ejecutor"
+          ],
+          "risks": [
+            "Requiere autorización formal y evidencia"
+          ],
+          "validations": [
+            "Revisión de Nelson"
+          ],
+          "done_when": [
+            "Entregable revisado con evidencia"
+          ]
+        },
+        "allowedActions": [],
+        "status": "blocked",
+        "evidenceRefs": []
+      },
+      {
+        "assignmentId": "BF-HOME-001-dev",
+        "missionId": "BF-HOME-001",
+        "role": "dev",
+        "goal": "Implementación futura pendiente de aprobación",
+        "scope": "BF-HOME-001-home",
+        "dependencies": [
+          "BF-HOME-001-designer"
+        ],
+        "expectedOutputs": {
+          "goal": "Implementación futura pendiente de aprobación",
+          "scope": "Home de BracketFlow; sin ejecución en este sprint",
+          "files_to_touch": [],
+          "plan": [
+            "Implementación futura pendiente de aprobación"
+          ],
+          "risks": [
+            "Requiere autorización formal y evidencia"
+          ],
+          "validations": [
+            "Revisión de Nelson"
+          ],
+          "done_when": [
+            "Entregable revisado con evidencia"
+          ]
+        },
+        "allowedActions": [],
+        "status": "blocked",
+        "evidenceRefs": []
+      },
+      {
+        "assignmentId": "BF-HOME-001-qa",
+        "missionId": "BF-HOME-001",
+        "role": "qa",
+        "goal": "Verificación posterior QA/Guardian con evidencia",
+        "scope": "BF-HOME-001-home",
+        "dependencies": [
+          "BF-HOME-001-dev"
+        ],
+        "expectedOutputs": {
+          "goal": "Verificación posterior QA/Guardian con evidencia",
+          "scope": "Home de BracketFlow; sin ejecución en este sprint",
+          "files_to_touch": [],
+          "plan": [
+            "Verificación posterior QA/Guardian con evidencia"
+          ],
+          "risks": [
+            "Requiere autorización formal y evidencia"
+          ],
+          "validations": [
+            "Revisión de Nelson"
+          ],
+          "done_when": [
+            "Entregable revisado con evidencia"
+          ]
+        },
+        "allowedActions": [],
+        "status": "blocked",
+        "evidenceRefs": []
+      }
+    ],
+    "authorizationPolicy": {
+      "mode": "explicit",
+      "allowedActions": [],
+      "approverIds": [
+        "nelson-sandoval"
+      ]
+    },
+    "evidenceRefs": [
+      "BF-HOME-001-PREPARE-02"
+    ]
+  },
+  "evidence": [
+    {
+      "source": "worker",
+      "jobId": "BF-HOME-001-PREPARE-02",
+      "action": "prepare_worktree",
+      "status": "done",
+      "observedAt": "2026-11-06T03:29:12.993Z",
+      "verifiedBaseSha": "e80aae09009f64d228a613ab7ac079882cfbd0b4",
+      "verifiedBranch": "worker/BF-HOME-001",
+      "evidenceReference": "BF-HOME-001-PREPARE-02",
+      "missionId": "BF-HOME-001",
+      "assignmentId": null,
+      "planHash": null
+    }
+  ],
+  "errors": [],
+  "environmentVerified": true,
+  "redesignExecuted": false,
+  "existingJobReused": true
+}
