@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:amon:execution-standards:preflight:1.0",
+  "title": "AMON preflight observations v1",
+  "description": "Observation structure only. Schema validity is neither authorization nor functional PASS. Evaluate host requirements with src/standards/gates.ts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "root",
+    "observedAt",
+    "platform",
+    "metadataComplete",
+    "datalessFiles",
+    "externalLinks",
+    "dependencyState",
+    "freeBytes",
+    "writable",
+    "errors"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT"
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "metadataComplete": {
+      "type": "boolean"
+    },
+    "datalessFiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    },
+    "externalLinks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    },
+    "dependencyState": {
+      "enum": [
+        "missing",
+        "local",
+        "external"
+      ]
+    },
+    "freeBytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "writable": {
+      "type": "boolean"
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    }
+  }
+}

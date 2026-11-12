@@ -1,0 +1,46 @@
+{
+  "source": "https://github.com/nsandovala/tbb-amon-delivery-dev/tree/f0e576e9db13db12d56dd57bba43833e09e40bcf/.agents/skills/amon-emulator-verification",
+  "ref": "main",
+  "headSha": "f0e576e9db13db12d56dd57bba43833e09e40bcf",
+  "upstreamVersion": "1.1.0",
+  "adaptationRevision": "aa-1",
+  "previousSource": {
+    "source": "https://github.com/nsandovala/tbb-amon-delivery-dev/pull/87",
+    "headSha": "071c92f40ba050bb743326c93622f4e89d0a70cd",
+    "upstreamVersion": "1.0.0"
+  },
+  "upstreamSha256": {
+    "README.md": "e5c52d37447a304c3f2653c1ad9e3c269b43995b9e22fadde7b0a8c3f6fc4e4a",
+    "SKILL.md": "c973cba8edff18657fcf6757577d8861e6324830f230bd1c5f940e5185b17f2b",
+    "agents/openai.yaml": "368d12c482d440d209d77bfa9053afd97d531ccc556a0b0006aac4077843a282",
+    "references/protocol.md": "8c0e57f11e6abb1f23baacebdecdb1d5b56110639867079a279d76cd55049a83",
+    "scripts/cleanup-authorized.ps1": "aa798a7a58285be03b488e32eadb8a7988766e4bc94b9ae4a8a93c2d72b23f38",
+    "scripts/postflight-emulators.ps1": "335762c67395ce1061bb3f4091debd101633c1e9d9c88c4badf66fbb490381fc",
+    "scripts/prebuild-next-guard.ps1": "837a230de75177d0d9b178a8fa646789658bb0d317d4766918256628210a860c",
+    "scripts/preflight-emulators.ps1": "344f80854e47896e2e80d4c732279ad34c6285f15dcdecf1d47f92bbea558d69",
+    "scripts/test-postflight-grace.ps1": "ae40e2e8be02bb45366330d7cb4f94318ba3b8276874a84f594e77358e11f303",
+    "scripts/test-prebuild-next-guard.ps1": "269261dcf64f7b08d4b6cf0038d302f57082f23e0c1950cb78a755c3f800d91e",
+    "scripts/test-preflight-fail-closed.ps1": "a3af30fa33fabc17e2cad668f49a55bf282d076dca8287976f234a0c8d140fd0"
+  },
+  "upstreamGitBlobs": {
+    "README.md": "40138e9143e597001cccac02ca5ef3ccc5224ed8",
+    "SKILL.md": "032fafae366583ae362a1b21ae90fc80484848f2",
+    "agents/openai.yaml": "bf071e3ab5a712514f85fbacc3fa0232a34ff44a",
+    "references/protocol.md": "a3f28655fa66c6ddce2ddf75c07d9d65b038a330",
+    "scripts/cleanup-authorized.ps1": "35d5e238188c804d65cf3cde33e71a4634e65dec",
+    "scripts/postflight-emulators.ps1": "b57f93799fdf3e3e12b09cf006290af480f327bf",
+    "scripts/prebuild-next-guard.ps1": "8842c4838cdedee57134ecbb9b8edd8305030b12",
+    "scripts/preflight-emulators.ps1": "503c907dcf826b18b9ed93e72716619377ccceaa",
+    "scripts/test-postflight-grace.ps1": "88339919fac8b88effdbd46996a5738e1ca9557c",
+    "scripts/test-prebuild-next-guard.ps1": "3af15a1812cb610921def16702d0aa34db1ee1bc",
+    "scripts/test-preflight-fail-closed.ps1": "d8778de48407d5855df48b3304b364979d93f39a"
+  },
+  "upstreamSkillBytes": 6220,
+  "omittedFiles": {
+    "README.md": "Distribution/pre-AA scope notes superseded by AA compatibility documentation"
+  },
+  "localOnlyFiles": [
+    "references/upstream.json",
+    "references/aa-compatibility.md"
+  ]
+}

@@ -16,3 +16,6 @@ dist/
 
 # Test coverage
 coverage/
+
+# Local execution evidence; may contain workstation paths.
+/.execution-qa/

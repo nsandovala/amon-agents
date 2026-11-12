@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:amon:execution-standards:release-gate:1.0",
+  "title": "AMON release-gate observations v1",
+  "description": "Observation structure only. Schema validity is neither authorization nor functional PASS. Evaluate host requirements with src/standards/gates.ts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "root",
+    "headSha",
+    "branch",
+    "observedAt",
+    "checks"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "root": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+    },
+    "headSha": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{40}$"
+    },
+    "branch": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d\\d-\\d\\dT"
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "layer",
+          "outcome",
+          "evidenceRef",
+          "detail"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "http",
+              "browser",
+              "authentication",
+              "business",
+              "emulator"
+            ]
+          },
+          "layer": {
+            "enum": [
+              "simulated",
+              "unit",
+              "http",
+              "browser",
+              "emulator"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "not_run"
+            ]
+          },
+          "evidenceRef": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        }
+      }
+    }
+  }
+}
