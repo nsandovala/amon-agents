@@ -1,0 +1,4 @@
+interface:
+  display_name: "AMON Emulator Verification"
+  short_description: "Verify AMON tests against isolated Firebase emulators"
+  default_prompt: "Run the AMON emulator verification protocol, preserve evidence, and report residual processes."

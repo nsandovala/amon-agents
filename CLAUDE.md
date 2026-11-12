@@ -234,3 +234,10 @@ Read from `.env.local` by CLI entry point.
 1. Add case to `call-llm.ts` dispatcher
 2. Implement provider-specific API call
 3. Test with `AMON_AGENTS_PROVIDER=<newprovider>`
+
+## AMON Execution Standards v1
+
+Read `.agents/standards/policy.md` before execution. Canonical skills are in
+`.agents/skills/`; `.claude/skills` resolves to the same directory. Use the relevant
+skill and preserve existing mission/worker/Guardian contracts. A passing unit test
+or Guardian verdict does not establish real browser/authentication acceptance.
