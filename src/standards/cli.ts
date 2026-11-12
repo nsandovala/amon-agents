@@ -6,8 +6,8 @@ export function main(args: string[]): number {
   try {
     const [mode, observationFile, requirementsFile] = args;
     if (args.length !== 3) throw new Error('usage');
-    const observations = JSON.parse(readFileSync(observationFile,'utf8'));
-    const requirements = JSON.parse(readFileSync(requirementsFile,'utf8'));
+    const observations = JSON.parse(readFileSync(observationFile,'utf8').replace(/^\uFEFF/,''));
+    const requirements = JSON.parse(readFileSync(requirementsFile,'utf8').replace(/^\uFEFF/,''));
     let result;
     switch (mode) {
       case 'preflight': result = preflightGate(observations,requirements); break;

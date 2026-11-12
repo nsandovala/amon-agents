@@ -32,9 +32,11 @@ class InspectorTests(unittest.TestCase):
             target.write_text('synthetic fixture')
             real_stat = Path.lstat
             def fake_stat(path):
-                if path == target:
-                    return types.SimpleNamespace(st_flags=module.DATALess)
-                return real_stat(path)
+                # Linux stat results lack st_flags; supply Darwin metadata for every path.
+                return types.SimpleNamespace(
+                    st_mode=real_stat(path).st_mode,
+                    st_flags=module.DATALess if path == target else 0,
+                )
             with patch.object(module.sys,'platform','darwin'), patch.object(Path,'lstat',fake_stat), \
                  patch.object(Path,'read_text',side_effect=AssertionError('must not read content')):
                 self.assertEqual(module.inspect(root)['datalessFiles'], ['page.tsx'])
