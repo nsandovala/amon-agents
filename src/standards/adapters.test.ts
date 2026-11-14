@@ -41,7 +41,7 @@ describe('canonical policy distribution (filesystem integration, not client infe
   it('preserves upstream emulator protocol and all scripts byte-for-byte', () => {
     const root = join(canonical,'amon-emulator-verification');
     const manifest = JSON.parse(readFileSync(join(root,'references/upstream.json'),'utf8'));
-    expect(manifest.headSha).toBe('2a66286eca9996453f1388ba29281ed40fe10eac');
+    expect(manifest.headSha).toBe('fc50c178989959d29021c9051d6b46f653818cd0');
     expect(manifest.upstreamVersion).toBe('1.1.1');
     expect(manifest.source).toBe(`https://github.com/nsandovala/tbb-amon-delivery-dev/tree/${manifest.headSha}/.agents/skills/amon-emulator-verification`);
     expect(manifest.ref).toBe('main');

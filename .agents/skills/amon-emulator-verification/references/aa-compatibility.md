@@ -1,9 +1,10 @@
 # AA compatibility for upstream 1.1.1
 
 The upstream SKILL.md prefix, protocol and scripts are preserved byte-for-byte.
-The manifest pins the merged Shop PR #98 commit
-`2a66286eca9996453f1388ba29281ed40fe10eac` and its original Git blob IDs and
-SHA-256 values. All imported upstream bytes match that immutable revision. The
+The manifest pins the merged Shop PR #99 commit
+`fc50c178989959d29021c9051d6b46f653818cd0` and its original Git blob IDs and
+SHA-256 values. All imported upstream bytes match that immutable revision. PR #99 adds two synthetic grace-window regressions to upstream 1.1.1. The previous
+source was Shop PR #98 (`2a66286eca9996453f1388ba29281ed40fe10eac`). The
 upstream README is omitted because its copy-based distribution and pre-AA scope
 notes do not describe AA's canonical links. No installation system is added.
 
