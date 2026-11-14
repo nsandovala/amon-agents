@@ -41,8 +41,11 @@ describe('canonical policy distribution (filesystem integration, not client infe
   it('preserves upstream emulator protocol and all scripts byte-for-byte', () => {
     const root = join(canonical,'amon-emulator-verification');
     const manifest = JSON.parse(readFileSync(join(root,'references/upstream.json'),'utf8'));
-    expect(manifest.headSha).toBe('f0e576e9db13db12d56dd57bba43833e09e40bcf');
-    expect(manifest.upstreamVersion).toBe('1.1.0');
+    expect(manifest.headSha).toBe('2a66286eca9996453f1388ba29281ed40fe10eac');
+    expect(manifest.upstreamVersion).toBe('1.1.1');
+    expect(manifest.source).toBe(`https://github.com/nsandovala/tbb-amon-delivery-dev/tree/${manifest.headSha}/.agents/skills/amon-emulator-verification`);
+    expect(manifest.ref).toBe('main');
+    expect(manifest).not.toHaveProperty('localCorrection');
     for (const [file,sha] of Object.entries(manifest.upstreamSha256)) {
       if (file === 'README.md') continue;
       const installed = readFileSync(join(root,file));
@@ -70,7 +73,7 @@ describe('canonical policy distribution (filesystem integration, not client infe
   });
 });
 
-describe('1.1.0 report boundary (synthetic compatibility, no Windows/emulator execution)', () => {
+describe('1.1.1 report boundary (synthetic compatibility, no Windows/emulator execution)', () => {
   it('blocks direct postflight-v2 input and accepts only a separate fresh v1 clean inventory', () => {
     const now = '2026-11-12T10:01:00.000Z';
     const policy = {root:resolve('.'),projectId:'demo-amon-ci',startedAt:now,now,phase:'postflight' as const,ownedPids:[]};

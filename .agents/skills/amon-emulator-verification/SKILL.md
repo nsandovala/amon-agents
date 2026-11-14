@@ -2,7 +2,7 @@
 name: amon-emulator-verification
 description: Reusable verification protocol for AMON Shop agents running API or browser tests against official Firebase emulators. Use for orders, POS, idempotency, auth, memberships, Functions, cash closing, concurrency, and before declaring READY FOR REVIEW. It prevents emulator cross-run contamination, forbids Firebase mocks when an emulator/seed/real collection exists, isolates Playwright projects, and preserves honest evidence for 409/422 versus 500/ECONNRESET.
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # AMON Emulator Verification
@@ -66,7 +66,7 @@ After the command exits, run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\.agents\skills\amon-emulator-verification\scripts\postflight-emulators.ps1 -ProjectRoot (Get-Location).Path -ExpectedProjectId demo-amon-ci -GraceSeconds 90 -PollSeconds 10 -OutputPath .\artifacts\emulator-postflight.json
 ```
 
-The postflight observes shutdown_pending while waiting, then outputs clean, residual, ambiguous or error. A residual PID is not automatically an orphan. If a process remains, record it. Do not terminate it automatically. Use the cleanup script only after a human authorizes a specific PID and the report still identifies it as an orphan from the completed run. The cleanup script is never part of the default verification command.
+The postflight observes shutdown_pending while waiting, then outputs clean, residual, ambiguous or error. Both ProjectRootMatch and ExpectedProjectIdMatch must be true for shutdown_pending or residual. Partial, absent or insufficient identity remains ambiguous. A residual PID is not automatically an orphan. If a process remains, record it. Do not terminate it automatically. Use the cleanup script only after a human authorizes a specific PID and the report still identifies it as an orphan from the completed run. The cleanup script is never part of the default verification command.
 
 ## Required report
 
@@ -77,8 +77,9 @@ See `references/protocol.md` for the full protocol and report template.
 
 ## AMON Agents adaptation
 
-Read `.agents/standards/policy.md` before this workflow. AMON Shop version 1.1.0
-from the immutable main revision is pinned in `references/upstream.json`. All
+Read `.agents/standards/policy.md` before this workflow. AMON Shop version 1.1.1
+from the merged Shop PR #98 is pinned in `references/upstream.json` using its
+immutable main commit and verified file hashes. All
 upstream instructions, protocol and scripts are preserved; this section is the
 only addition to SKILL.md. Read `references/aa-compatibility.md` before using AA's
 emulator gate or Windows skill adapters: postflight-v2 is not a preflight-v1 report.

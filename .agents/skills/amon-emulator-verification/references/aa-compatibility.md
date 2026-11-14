@@ -1,13 +1,19 @@
-# AA compatibility for upstream 1.1.0
+# AA compatibility for upstream 1.1.1
 
 The upstream SKILL.md prefix, protocol and scripts are preserved byte-for-byte.
-The manifest pins the main SHA, original Git blob IDs and SHA-256 values. The
+The manifest pins the merged Shop PR #98 commit
+`2a66286eca9996453f1388ba29281ed40fe10eac` and its original Git blob IDs and
+SHA-256 values. All imported upstream bytes match that immutable revision. The
 upstream README is omitted because its copy-based distribution and pre-AA scope
 notes do not describe AA's canonical links. No installation system is added.
 
+Both process identifiers must match for shutdown_pending/residual. Partial or
+missing identity remains ambiguous. This correction does not change report schemas
+or authorize cleanup.
+
 ## Report contracts and AA gate
 
-| Producer | 1.1.0 report | AA consumer |
+| Producer | 1.1.1 report | AA consumer |
 | --- | --- | --- |
 | preflight-emulators.ps1 | preflight-v1, unchanged | emulatorGate accepts this inventory |
 | postflight-emulators.ps1 | postflight-v2; grace/poll and observations | Not a direct emulatorGate input; rejected as BLOCKED |

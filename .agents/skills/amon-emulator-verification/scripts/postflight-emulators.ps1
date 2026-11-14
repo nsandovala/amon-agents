@@ -29,7 +29,7 @@ do {
   }
 
   $latestListeners = @($latest.listeners | Where-Object { $null -ne $_ })
-  $ambiguous = @($latestListeners | Where-Object { -not ($_.ProjectRootMatch -or $_.ExpectedProjectIdMatch) })
+  $ambiguous = @($latestListeners | Where-Object { -not ($_.ProjectRootMatch -and $_.ExpectedProjectIdMatch) })
   $sampleStatus = if ($latest.status -eq "clean") {
     "clean"
   } elseif ($ambiguous.Count -gt 0) {
@@ -50,7 +50,7 @@ do {
   Start-Sleep -Seconds ([int][math]::Min($PollSeconds, $remaining))
 } while ($true)
 
-$unmatched = @($latestListeners | Where-Object { -not ($_.ProjectRootMatch -or $_.ExpectedProjectIdMatch) })
+$unmatched = @($latestListeners | Where-Object { -not ($_.ProjectRootMatch -and $_.ExpectedProjectIdMatch) })
 $status = if ($inspectionError) {
   "error"
 } elseif ($latest -and $latest.status -eq "clean") {
