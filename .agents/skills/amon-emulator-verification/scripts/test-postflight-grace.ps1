@@ -68,8 +68,26 @@ try {
     }
     Write-Output "PASS: $($case.Name) -> $($case.Sample) / $($case.Status)."
   }
+  $global:mockMode = "pending"
+  foreach ($case in $cases | Where-Object {
+    $_.Name -in @("root only", "project ID only, foreign worktree")
+  }) {
+    $global:mockCalls = 0
+    $global:mockCommandLines = $case.Commands
+    $report = (& $target -ProjectRoot $global:mockRoot -Ports @("8080") `
+      -GraceSeconds 30 -PollSeconds 1 | ConvertFrom-Json)
+
+    if ($report.status -ne "ambiguous" -or
+        $report.observations.Count -ne 1 -or
+        $report.observations[0].status -ne "ambiguous" -or
+        $report.listeners.Count -ne 1 -or
+        $global:mockCalls -ne 1) {
+      throw "$($case.Name): ambiguity must end polling and preserve listener evidence."
+    }
+    Write-Output "PASS: $($case.Name) remains ambiguous with grace enabled."
+  }
   if ($global:mockStopCalls -ne 0) { throw "Unexpected cleanup invocation." }
-  Write-Output "PASS: 9 synthetic scenarios, including delayed shutdown; no cleanup."
+  Write-Output "PASS: 11 synthetic scenarios, including delayed shutdown; no cleanup."
 } finally {
   Remove-Item Function:\Get-NetTCPConnection -ErrorAction SilentlyContinue
   Remove-Item Function:\Get-CimInstance -ErrorAction SilentlyContinue

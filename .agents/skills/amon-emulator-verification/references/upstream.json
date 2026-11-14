@@ -1,13 +1,13 @@
 {
-  "source": "https://github.com/nsandovala/tbb-amon-delivery-dev/tree/2a66286eca9996453f1388ba29281ed40fe10eac/.agents/skills/amon-emulator-verification",
+  "source": "https://github.com/nsandovala/tbb-amon-delivery-dev/tree/fc50c178989959d29021c9051d6b46f653818cd0/.agents/skills/amon-emulator-verification",
   "ref": "main",
-  "headSha": "2a66286eca9996453f1388ba29281ed40fe10eac",
+  "headSha": "fc50c178989959d29021c9051d6b46f653818cd0",
   "upstreamVersion": "1.1.1",
-  "adaptationRevision": "aa-2",
+  "adaptationRevision": "aa-3",
   "previousSource": {
-    "source": "https://github.com/nsandovala/tbb-amon-delivery-dev/tree/f0e576e9db13db12d56dd57bba43833e09e40bcf/.agents/skills/amon-emulator-verification",
-    "headSha": "f0e576e9db13db12d56dd57bba43833e09e40bcf",
-    "upstreamVersion": "1.1.0"
+    "source": "https://github.com/nsandovala/tbb-amon-delivery-dev/tree/2a66286eca9996453f1388ba29281ed40fe10eac/.agents/skills/amon-emulator-verification",
+    "headSha": "2a66286eca9996453f1388ba29281ed40fe10eac",
+    "upstreamVersion": "1.1.1"
   },
   "upstreamSha256": {
     "README.md": "649226a2f8c77b247481e548850b05aaac7c7271f49bb1e1b15e7a54e2ccb2ba",
@@ -18,7 +18,7 @@
     "scripts/postflight-emulators.ps1": "848fb3f3e746e1453cb0045613c123f810f458d90f3fd182266a5e859ef9a5d6",
     "scripts/prebuild-next-guard.ps1": "837a230de75177d0d9b178a8fa646789658bb0d317d4766918256628210a860c",
     "scripts/preflight-emulators.ps1": "344f80854e47896e2e80d4c732279ad34c6285f15dcdecf1d47f92bbea558d69",
-    "scripts/test-postflight-grace.ps1": "d21917e14587686e54368498898b297a6cadfb7b1aa193644312d89d3cfd12ea",
+    "scripts/test-postflight-grace.ps1": "ef07b846c54b597f86b7dc9eed0829173ac86eba57fe7c75932a42c163fb1eee",
     "scripts/test-prebuild-next-guard.ps1": "269261dcf64f7b08d4b6cf0038d302f57082f23e0c1950cb78a755c3f800d91e",
     "scripts/test-preflight-fail-closed.ps1": "a3af30fa33fabc17e2cad668f49a55bf282d076dca8287976f234a0c8d140fd0"
   },
@@ -31,7 +31,7 @@
     "scripts/postflight-emulators.ps1": "e1de78d6158a1acfc2abf69c28172152dded8fc5",
     "scripts/prebuild-next-guard.ps1": "8842c4838cdedee57134ecbb9b8edd8305030b12",
     "scripts/preflight-emulators.ps1": "503c907dcf826b18b9ed93e72716619377ccceaa",
-    "scripts/test-postflight-grace.ps1": "96356b8d56ca6c445ec9ca864e8885725f0242d6",
+    "scripts/test-postflight-grace.ps1": "c275b4505a517403f1d098ec3b7b419a848507ff",
     "scripts/test-prebuild-next-guard.ps1": "3af15a1812cb610921def16702d0aa34db1ee1bc",
     "scripts/test-preflight-fail-closed.ps1": "d8778de48407d5855df48b3304b364979d93f39a"
   },
