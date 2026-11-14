@@ -6,10 +6,12 @@
   "types": "dist/index.d.ts",
   "bin": {
     "amon": "dist/cli/amon.js",
-    "amon-agents": "dist/cli/amon.js"
+    "amon-agents": "dist/cli/amon.js",
+    "amon-guardian-mcp": "dist/guardian/mcp-stdio.js"
   },
   "scripts": {
     "build": "tsc",
+    "mcp:guardian": "node dist/guardian/mcp-stdio.js",
     "start": "node dist/core/run-agent.js",
     "dev": "ts-node src/core/run-agent.ts",
     "amon": "ts-node src/cli/amon.ts",
@@ -37,6 +39,7 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "dotenv": "^17.4.2",
     "js-yaml": "^4.1.0"
   }
