@@ -32,6 +32,24 @@ combines both checks, binds the Next policy to the worker's worktree/revision an
 review time, and cannot convert a worker failure into PASS. This optional context
 is not loaded from the worker JSON. No new orchestrator or CLI command is added.
 
+HEAD identifies committed contents, not a coding tool's uncommitted output. The
+combined review requires an explicitly clean `gitStatusAfter`, an empty
+`changedFiles` list and matching worker/build HEADs. Missing or contradictory
+content evidence blocks; the existing contract has no content digest with which
+to attest dirty output. The build must also start at or after the worker's valid
+finish time, so an earlier build cannot attest later work. These checks do not
+relax the existing worker policy: a coding job with no changes still returns
+`HUMAN_REVIEW` (`CHANGED_FILES_EMPTY`), and worker HEAD changes still block.
+The standalone release gate continues to accept valid clean revision evidence
+subject to all its other requirements.
+
+`runGuardianReview` captures one host review timestamp after reading the worker
+record. `reviewWorkerJobEvidence` uses its host-supplied `reviewedAt` for the Next
+policy's `now`, on a copy of the requirements. It does not require equality with
+a separately sampled policy clock or accept a clock from worker JSON. Build and
+advisory freshness checks remain active. Standalone `releaseGate` callers still
+supply their own trusted host time as before.
+
 Requirements files remain a trusted-host boundary, as in ES-07. These validators
 cannot prevent someone with write access to that host's configuration from
 changing it. Keep approved requirements outside model-generated artifacts and
@@ -57,7 +75,11 @@ value (null means unset); effective build `NODE_ENV` must be `production`.
 Nonstandard values such as `staging` block in either phase. This checks effective
 observations; it does not inspect shell profiles or `.env` files.
 
-Warnings marked `⚠`, `warn` or `warning` are retained in the source logs. Tracing,
+Warnings beginning with diagnostic markers/prefixes (`⚠`, `warn`, `warning`,
+`[warn]`/`[warning]`, or Node's `(node:PID) ... Warning:` format) are retained in
+the source logs. Leading whitespace and ANSI colors are handled. Ordinary route
+summaries containing `/warning` or `/warn` are not diagnostics; a genuine warning
+about either route still blocks. Tracing,
 `outputFileTracingRoot`, inferred workspace root and multiple-lockfile warnings
 receive `NEXT_TRACING_WARNING`; all other warnings receive
 `NEXT_WARNING_UNCLASSIFIED`. Both block in this increment. There is no agent

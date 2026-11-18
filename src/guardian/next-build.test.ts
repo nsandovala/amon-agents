@@ -10,6 +10,42 @@ function setup(version?: string) {
 }
 
 describe('Next build observations (synthetic, no Next app execution)', () => {
+  it('PR14 regression P2 warnings: accepts ordinary /warning and /warn route summaries', () => {
+    const {build,review} = setup();
+    for (const route of ['/warning','/warn']) {
+      expect(review({...build,stdout:`Compiled successfully\n└ ○ ${route}  1 kB  100 kB`}).verdict).toBe('PASS');
+    }
+  });
+  it.each([
+    '└ ○ /warning  1 kB  100 kB',
+    '├ ƒ /warn/[id]  1 kB  100 kB',
+    '└ ○ /docs/warning  1 kB  100 kB',
+    'Generated route /warn successfully',
+    '  /warning',
+  ])('does not classify route names as diagnostics in either log stream: %s', line => {
+    const {build,review} = setup();
+    for (const field of ['stdout','stderr']) expect(review({...build,[field]:line}).verdict).toBe('PASS');
+  });
+  it.each([
+    ['  ⚠ Unknown diagnostic','NEXT_WARNING_UNCLASSIFIED'],
+    ['Warning: Unknown diagnostic','NEXT_WARNING_UNCLASSIFIED'],
+    ['warn  - Unknown diagnostic','NEXT_WARNING_UNCLASSIFIED'],
+    ['  [WARNING] Unknown diagnostic','NEXT_WARNING_UNCLASSIFIED'],
+    ['(node:123) Warning: Unknown diagnostic','NEXT_WARNING_UNCLASSIFIED'],
+    ['(node:123) [DEP0040] DeprecationWarning: Unknown diagnostic','NEXT_WARNING_UNCLASSIFIED'],
+    ['\u001b[33m ⚠ Failed to collect build traces\u001b[0m','NEXT_TRACING_WARNING'],
+    ['warn  - We detected multiple lockfiles','NEXT_TRACING_WARNING'],
+    ['[warn] outputFileTracingRoot needs configuration','NEXT_TRACING_WARNING'],
+    ['Warning: Next.js inferred your workspace root','NEXT_TRACING_WARNING'],
+    ['⚠ Unknown diagnostic for /warning','NEXT_WARNING_UNCLASSIFIED'],
+  ])('still blocks genuine warning prefixes in both streams: %s', (line,code) => {
+    const {build,review} = setup();
+    for (const field of ['stdout','stderr']) {
+      const result = review({...build,[field]:`└ ○ /warn  1 kB  100 kB\n${line}`});
+      expect(result.verdict).toBe('BLOCKED');
+      expect(result.findings.map(f => f.code)).toEqual([code]);
+    }
+  });
   it('accepts complete bound evidence; security result is scoped to the supplied advisory', () => {
     const r = setup().review();
     expect(r.verdict).toBe('PASS');

@@ -161,7 +161,7 @@ export function reviewNextBuildEvidence(evidence: unknown, policy: NextBuildPoli
   log.split(/\r?\n/).forEach((line,index) => {
     if (/non.standard.*NODE_ENV|NODE_ENV.*non.standard/i.test(line))
       add('NEXT_NODE_ENV_INVALID',`Non-standard NODE_ENV diagnostic at combined log line ${index+1}`);
-    if (/⚠|\bwarn(?:ing)?\b/i.test(line)) {
+    if (/^\s*(?:⚠|warn(?:ing)?(?=[:\s]|$)|\[warn(?:ing)?\]|\(node:\d+\)\s+(?:\[[A-Z0-9_]+\]\s+)?[A-Za-z]*Warning:)/i.test(line)) {
       const tracing = /trac(?:e|ing)|outputFileTracingRoot|multiple lockfiles|inferred your workspace root/i.test(line);
       add(tracing ? 'NEXT_TRACING_WARNING' : 'NEXT_WARNING_UNCLASSIFIED',
         `${tracing ? 'Tracing' : 'Unclassified'} warning at combined log line ${index+1}; retained and blocking`);
