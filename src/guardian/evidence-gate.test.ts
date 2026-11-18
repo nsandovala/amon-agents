@@ -4,6 +4,7 @@ import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getGuardianReviewPath, GUARDIAN_POLICY_VERSION, reviewWorkerJobEvidence, runGuardianReview } from "./evidence-gate";
 import { CodingToolEvidence, WorkerJobState } from "../worker/types";
+import { nextFixture } from './fixtures/next-release';
 
 const tempDirs: string[] = [];
 const worktreeRoot = "/workspace/.amon/worktrees";
@@ -75,7 +76,162 @@ function review(job: WorkerJobState) {
   );
 }
 
+function nextWorkerCase() {
+  const {build,policy} = nextFixture();
+  const nextPolicy = {...policy.nextBuild,...policy,root:worktreePath,headSha,
+    branch:'worker/jarvis-004d-smoke-003'};
+  const evidence = {...build,root:worktreePath,headSha,worktreeHeadShaAfter:headSha,branch:nextPolicy.branch};
+  const options = {reviewId:'NEXT-REVIEW',workerJobId:'JARVIS-004D-RUN-004',reviewedAt:policy.now,
+    nextBuild:{evidence,policy:nextPolicy}};
+  return {options};
+}
+
 describe("guardian evidence gate", () => {
+  it('PR14 regression P1: blocks uncommitted worker output despite matching build HEAD', () => {
+    const {options} = nextWorkerCase();
+    const result = reviewWorkerJobEvidence({workerJob:workerJob(),worktreeRoot},options);
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.findings.map(f => f.code)).toContain('NEXT_WORKER_CONTENT_UNVERIFIED');
+  });
+  it('PR14 regression P2 clock: normal host clock does not require a separately sampled timestamp', async () => {
+    const dir = await makeTempDir();
+    const {options} = nextWorkerCase();
+    options.nextBuild.policy.now = new Date(Date.now()-1000).toISOString();
+    const job = workerJob({}, {changedFiles:[],gitStatusAfter:''});
+    await mkdir(join(dir,'outputs/worker/jobs'),{recursive:true});
+    await writeFile(join(dir,'outputs/worker/jobs/JARVIS-004D-RUN-004.json'),JSON.stringify(job));
+    const before = Date.now();
+    const result = await runGuardianReview({reviewId:'NEXT-REAL-CLOCK',workerJobId:job.jobId}, {
+      cwd:dir,env:{AMON_WORKTREE_ROOT:worktreeRoot},nextBuild:options.nextBuild,
+    });
+    expect(Date.parse(result.reviewedAt)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(result.reviewedAt)).toBeLessThanOrEqual(Date.now());
+    // A clean no-change coding job still needs human review under the existing
+    // Guardian policy; passing the Next checks must not weaken that requirement.
+    expect(result.verdict).toBe('HUMAN_REVIEW');
+    expect(result.findings.map(f => f.code)).toEqual(['CHANGED_FILES_EMPTY']);
+  });
+  it.each([
+    {gitStatusAfter:' M app/page.tsx',changedFiles:['app/page.tsx']},
+    {gitStatusAfter:'M  app/page.tsx',changedFiles:['app/page.tsx']},
+    {gitStatusAfter:'?? app/new.tsx',changedFiles:['app/new.tsx']},
+    {gitStatusAfter:' M app/page.tsx',changedFiles:[]},
+    {gitStatusAfter:'',changedFiles:['app/page.tsx']},
+    {gitStatusAfter:null,changedFiles:[]},
+    {gitStatusAfter:'',changedFiles:undefined as never},
+  ])('fails closed on dirty, contradictory or missing worker content identity %j', change => {
+    const {options} = nextWorkerCase();
+    const result = reviewWorkerJobEvidence({workerJob:workerJob({},change),worktreeRoot},options);
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.findings.map(f => f.code)).toContain('NEXT_WORKER_CONTENT_UNVERIFIED');
+  });
+  it.each([
+    {startedAt:'2026-11-18T00:00:00.000Z',finishedAt:'2026-11-18T00:01:30.000Z'},
+    {finishedAt:null},
+    {finishedAt:'2026-02-30T00:00:00.000Z'},
+    {finishedAt:'2026-10-01T00:00:00.000Z'},
+    {startedAt:'invalid'},
+  ])('rejects builds before worker completion or unknown worker chronology %j', change => {
+    const {options} = nextWorkerCase();
+    const job = workerJob({}, {changedFiles:[],gitStatusAfter:'',...change});
+    const result = reviewWorkerJobEvidence({workerJob:job,worktreeRoot},options);
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.findings.map(f => f.code)).toContain('NEXT_WORKER_BUILD_CHRONOLOGY_UNVERIFIED');
+    expect(result.findings.map(f => f.code)).not.toContain('NEXT_WORKER_CONTENT_UNVERIFIED');
+  });
+  it('requires the clean worker and the build to identify the same committed revision', () => {
+    const {options} = nextWorkerCase();
+    const clean = workerJob({}, {changedFiles:[],gitStatusAfter:''});
+    const foreign = workerJob({}, {changedFiles:[],gitStatusAfter:'',headSha:'b'.repeat(40),worktreeHeadShaAfter:'b'.repeat(40)});
+    expect(reviewWorkerJobEvidence({workerJob:foreign,worktreeRoot},options).findings.map(f => f.code))
+      .toContain('NEXT_WORKER_CONTEXT_MISMATCH');
+    options.nextBuild.evidence.headSha = 'b'.repeat(40);
+    options.nextBuild.evidence.worktreeHeadShaAfter = 'b'.repeat(40);
+    expect(reviewWorkerJobEvidence({workerJob:clean,worktreeRoot},options).findings.map(f => f.code))
+      .toContain('NEXT_BUILD_REVISION_MISMATCH');
+  });
+  it('takes one host clock sample and does not mutate the original requirements', async () => {
+    const {options} = nextWorkerCase();
+    const trustedNow = options.reviewedAt;
+    options.nextBuild.policy.now = '2026-11-18T00:01:59.999Z';
+    Object.freeze(options.nextBuild.policy);
+    const before = JSON.stringify(options.nextBuild);
+    const dir = await makeTempDir();
+    let calls = 0;
+    const result = await runGuardianReview({reviewId:'NEXT-ONE-CLOCK',workerJobId:'JARVIS-004D-RUN-004'}, {
+      cwd:dir,env:{AMON_WORKTREE_ROOT:worktreeRoot},nextBuild:options.nextBuild,
+      readFile:async () => JSON.stringify(workerJob({}, {changedFiles:[],gitStatusAfter:''})),
+      now:() => { calls++; return new Date(trustedNow); },
+    });
+    expect(calls).toBe(1);
+    expect(result.reviewedAt).toBe(trustedNow);
+    expect(result.findings.map(f => f.code)).toEqual(['CHANGED_FILES_EMPTY']);
+    expect(JSON.stringify(options.nextBuild)).toBe(before);
+  });
+  it('keeps future build evidence blocked by the real host clock despite worker-supplied times', async () => {
+    const dir = await makeTempDir();
+    const {options} = nextWorkerCase();
+    const future = new Date(Date.now()+60_000).toISOString();
+    options.nextBuild.policy.now = future;
+    options.nextBuild.evidence.finishedAt = future;
+    options.nextBuild.evidence.result.createdAt = future;
+    const job = {...workerJob({}, {changedFiles:[],gitStatusAfter:''}),now:future,reviewedAt:future,
+      nextBuild:options.nextBuild};
+    await mkdir(join(dir,'outputs/worker/jobs'),{recursive:true});
+    await writeFile(join(dir,'outputs/worker/jobs/JARVIS-004D-RUN-004.json'),JSON.stringify(job));
+    const result = await runGuardianReview({reviewId:'NEXT-UNTRUSTED-CLOCK',workerJobId:job.jobId}, {
+      cwd:dir,env:{AMON_WORKTREE_ROOT:worktreeRoot},nextBuild:options.nextBuild,
+    });
+    expect(Date.parse(result.reviewedAt)).toBeLessThan(Date.parse(future));
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.findings.map(f => f.code)).toContain('NEXT_BUILD_INCOMPLETE');
+  });
+  it('preserves advisory freshness and rejects an invalid trusted review time', () => {
+    const {options} = nextWorkerCase();
+    const clean = workerJob({}, {changedFiles:[],gitStatusAfter:''});
+    options.nextBuild.policy.advisories[0].retrievedAt = '2026-11-17T00:00:00.000Z';
+    expect(reviewWorkerJobEvidence({workerJob:clean,worktreeRoot},options).findings.map(f => f.code))
+      .toContain('NEXT_SECURITY_INSUFFICIENT');
+    expect(reviewWorkerJobEvidence({workerJob:clean,worktreeRoot},{...options,reviewedAt:'invalid'}).findings.map(f => f.code))
+      .toContain('NEXT_REQUIREMENTS_INVALID');
+  });
+  it('integrates host-required Next checks without granting acceptance from worker PASS', () => {
+    const {build,policy} = nextFixture();
+    const nextPolicy = {...policy.nextBuild,...policy,root:worktreePath,headSha,
+      branch:'worker/jarvis-004d-smoke-003'};
+    const evidence = {...build,root:worktreePath,headSha,worktreeHeadShaAfter:headSha,branch:nextPolicy.branch};
+    const options = {reviewId:'NEXT-REVIEW',workerJobId:'JARVIS-004D-RUN-004',reviewedAt:policy.now,
+      nextBuild:{evidence,policy:nextPolicy}};
+    const clean = workerJob({}, {changedFiles:[],gitStatusAfter:''});
+    const result = reviewWorkerJobEvidence({workerJob:clean,worktreeRoot},options);
+    expect(result.verdict).toBe('HUMAN_REVIEW');
+    expect(result.findings.map(f => f.code)).toEqual(['CHANGED_FILES_EMPTY']);
+    for (const observed of [undefined,{...evidence,exitCode:1},{...evidence,buildNodeEnv:'development'}]) {
+      const r = reviewWorkerJobEvidence({workerJob:workerJob(),worktreeRoot},
+        {...options,nextBuild:{evidence:observed,policy:nextPolicy}});
+      expect(r.verdict).toBe('BLOCKED');
+      expect(r.findings.some(f => f.code.startsWith('NEXT_'))).toBe(true);
+    }
+    const foreign = reviewWorkerJobEvidence({workerJob:workerJob(),worktreeRoot},
+      {...options,nextBuild:{evidence:build,policy:{...policy.nextBuild,...policy}}});
+    expect(foreign.findings.map(f => f.code)).toContain('NEXT_WORKER_CONTEXT_MISMATCH');
+  });
+  it('persists Next failures through the existing host Guardian review entry point', async () => {
+    const dir = await makeTempDir();
+    const {build,policy} = nextFixture();
+    const nextPolicy = {...policy.nextBuild,...policy,root:worktreePath,headSha,
+      branch:'worker/jarvis-004d-smoke-003'};
+    await mkdir(join(dir,'outputs/worker/jobs'),{recursive:true});
+    await writeFile(join(dir,'outputs/worker/jobs/JARVIS-004D-RUN-004.json'),JSON.stringify(workerJob()));
+    const result = await runGuardianReview({reviewId:'NEXT-HOST',workerJobId:'JARVIS-004D-RUN-004'}, {
+      cwd:dir,env:{AMON_WORKTREE_ROOT:worktreeRoot},now:() => new Date(policy.now),
+      nextBuild:{policy:nextPolicy,evidence:{...build,root:worktreePath,headSha,
+        worktreeHeadShaAfter:headSha,branch:nextPolicy.branch,exitCode:1}},
+    });
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.findings.map(f => f.code)).toContain('NEXT_BUILD_EXIT_FAILED');
+    expect(JSON.parse(await readFile(getGuardianReviewPath('NEXT-HOST',dir),'utf8'))).toEqual(result);
+  });
   it("returns PASS for valid coding tool evidence", () => {
     const result = review(workerJob());
 

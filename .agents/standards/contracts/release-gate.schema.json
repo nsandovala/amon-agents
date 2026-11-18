@@ -93,6 +93,166 @@
           }
         }
       }
+    },
+    "nextBuild": {
+      "description": "Optional observations; required by trusted host nextBuild policy for Next.js releases. Never contains acceptance criteria or advisory allowlists.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "root",
+        "headSha",
+        "branch",
+        "worktreeHeadShaAfter",
+        "command",
+        "nodeVersion",
+        "platform",
+        "lockfileSha256",
+        "startedAt",
+        "finishedAt",
+        "treeClean",
+        "completed",
+        "timedOut",
+        "logComplete",
+        "installNodeEnv",
+        "buildNodeEnv",
+        "signal",
+        "exitCode",
+        "stdout",
+        "stderr",
+        "result"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+        },
+        "headSha": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "worktreeHeadShaAfter": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{40}$"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "nodeVersion": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "lockfileSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?Z$"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?Z$"
+        },
+        "treeClean": {
+          "type": "boolean"
+        },
+        "completed": {
+          "type": "boolean"
+        },
+        "timedOut": {
+          "type": "boolean"
+        },
+        "logComplete": {
+          "type": "boolean"
+        },
+        "installNodeEnv": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "buildNodeEnv": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "outcome",
+            "buildId",
+            "createdAt",
+            "evidenceRef"
+          ],
+          "properties": {
+            "outcome": {
+              "enum": [
+                "passed",
+                "failed",
+                "blocked",
+                "not_run"
+              ]
+            },
+            "buildId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?Z$"
+            },
+            "evidenceRef": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -5,12 +5,15 @@ import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { resolveWorkspaceRoot } from "../worker/host";
 import { CodingToolEvidence, WorkerJobEvidence, WorkerJobState } from "../worker/types";
 import { GuardianFinding, GuardianReview, GuardianReviewContext, GuardianReviewInput, GuardianVerdict } from "./types";
+import { NextBuildPolicy, reviewNextBuildEvidence } from './next-build';
 
 export const GUARDIAN_POLICY_VERSION = "guardian-evidence-v0.1" as const;
 
 const SUPPORTED_CODING_TOOLS = new Set(["opencode"]);
 
 export interface GuardianReviewDeps {
+  /** Host-selected requirements and observations; never loaded from worker evidence. */
+  nextBuild?: { evidence: unknown; policy: NextBuildPolicy };
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   existsSync?: (path: string) => boolean;
@@ -86,6 +89,31 @@ function statusMentionsChangedFiles(status: string | null, changedFiles: string[
   if (changedFiles.length === 0) return true;
   if (!status || status.trim().length === 0) return false;
   return changedFiles.every((file) => status.includes(file));
+}
+
+function observationTime(value: unknown): number {
+  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value)) return NaN;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0,10) === value.slice(0,10) ? time : NaN;
+}
+
+function reviewNextWorkerContent(worker: WorkerJobEvidence | undefined, build: unknown): GuardianFinding[] {
+  const findings: GuardianFinding[] = [];
+  // HEAD alone identifies committed contents. The existing contract has no
+  // digest tying a dirty worker output to a build, so never infer that identity.
+  if (!isCodingToolEvidence(worker) || typeof worker.gitStatusAfter !== 'string' || worker.gitStatusAfter.trim() !== '' ||
+      !Array.isArray(worker.changedFiles) || worker.changedFiles.length !== 0) {
+    findings.push({code:'NEXT_WORKER_CONTENT_UNVERIFIED',severity:'error',
+      message:'Next build cannot attest uncommitted, changed or unknown worker output from HEAD alone'});
+  }
+  const started = isCodingToolEvidence(worker) ? observationTime(worker.startedAt) : NaN;
+  const finished = isCodingToolEvidence(worker) ? observationTime(worker.finishedAt) : NaN;
+  const built = isRecord(build) ? observationTime(build.startedAt) : NaN;
+  if (![started,finished,built].every(Number.isFinite) || started > finished || finished > built) {
+    findings.push({code:'NEXT_WORKER_BUILD_CHRONOLOGY_UNVERIFIED',severity:'error',
+      message:'The build must start after the worker has finished; valid worker and build times are required'});
+  }
+  return findings;
 }
 
 function verdictFor(findings: GuardianFinding[]): GuardianVerdict {
@@ -180,7 +208,9 @@ function reviewCodingToolEvidence(context: GuardianReviewContext): GuardianFindi
   return findings;
 }
 
-export function reviewWorkerJobEvidence(context: GuardianReviewContext, options: { reviewId: string; workerJobId: string; reviewedAt: string }): GuardianReview {
+export function reviewWorkerJobEvidence(context: GuardianReviewContext, options: {
+  reviewId: string; workerJobId: string; reviewedAt: string; nextBuild?: GuardianReviewDeps['nextBuild'];
+}): GuardianReview {
   const findings: GuardianFinding[] = [];
   const job = context.workerJob;
 
@@ -190,6 +220,20 @@ export function reviewWorkerJobEvidence(context: GuardianReviewContext, options:
     findings.push(...reviewCodingToolEvidence(context));
   }
 
+  if (Object.hasOwn(options,'nextBuild')) {
+    const next = options.nextBuild;
+    // reviewedAt is supplied by the host, not worker JSON. Use that one instant
+    // for all freshness checks without mutating the caller's requirements.
+    const policy = next?.policy ? {...next.policy,now:options.reviewedAt} : undefined;
+    findings.push(...reviewNextBuildEvidence(next?.evidence,policy as NextBuildPolicy).findings);
+    findings.push(...reviewNextWorkerContent(job.evidence,next?.evidence));
+    if (!next?.policy || !isCodingToolEvidence(job.evidence) ||
+        next.policy.root !== job.evidence.worktreePath || next.policy.headSha !== job.evidence.worktreeHeadShaAfter ||
+        next.policy.branch !== job.evidence.worktreeBranchAfter) {
+      findings.push({code:'NEXT_WORKER_CONTEXT_MISMATCH',severity:'error',
+        message:'Next build policy must identify the reviewed worker revision and worktree'});
+    }
+  }
   const verdict = verdictFor(findings);
   return {
     reviewId: options.reviewId,
@@ -229,6 +273,7 @@ export async function runGuardianReview(input: GuardianReviewInput, deps: Guardi
     throw new GuardianReviewError("Worker job evidence is not a JSON object");
   }
 
+  const reviewedAt = now().toISOString();
   const review = reviewWorkerJobEvidence(
     {
       workerJob: parsed as unknown as WorkerJobState,
@@ -237,7 +282,8 @@ export async function runGuardianReview(input: GuardianReviewInput, deps: Guardi
     {
       reviewId: input.reviewId,
       workerJobId: input.workerJobId,
-      reviewedAt: now().toISOString(),
+      reviewedAt,
+      ...(Object.hasOwn(deps,'nextBuild') ? {nextBuild:deps.nextBuild} : {}),
     }
   );
 
