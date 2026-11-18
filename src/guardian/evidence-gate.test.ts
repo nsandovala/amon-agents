@@ -4,6 +4,7 @@ import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { getGuardianReviewPath, GUARDIAN_POLICY_VERSION, reviewWorkerJobEvidence, runGuardianReview } from "./evidence-gate";
 import { CodingToolEvidence, WorkerJobState } from "../worker/types";
+import { nextFixture } from './fixtures/next-release';
 
 const tempDirs: string[] = [];
 const worktreeRoot = "/workspace/.amon/worktrees";
@@ -76,6 +77,40 @@ function review(job: WorkerJobState) {
 }
 
 describe("guardian evidence gate", () => {
+  it('integrates host-required Next checks without granting acceptance from worker PASS', () => {
+    const {build,policy} = nextFixture();
+    const nextPolicy = {...policy.nextBuild,...policy,root:worktreePath,headSha,
+      branch:'worker/jarvis-004d-smoke-003'};
+    const evidence = {...build,root:worktreePath,headSha,worktreeHeadShaAfter:headSha,branch:nextPolicy.branch};
+    const options = {reviewId:'NEXT-REVIEW',workerJobId:'JARVIS-004D-RUN-004',reviewedAt:policy.now,
+      nextBuild:{evidence,policy:nextPolicy}};
+    expect(reviewWorkerJobEvidence({workerJob:workerJob(),worktreeRoot},options).verdict).toBe('PASS');
+    for (const observed of [undefined,{...evidence,exitCode:1},{...evidence,buildNodeEnv:'development'}]) {
+      const r = reviewWorkerJobEvidence({workerJob:workerJob(),worktreeRoot},
+        {...options,nextBuild:{evidence:observed,policy:nextPolicy}});
+      expect(r.verdict).toBe('BLOCKED');
+      expect(r.findings.some(f => f.code.startsWith('NEXT_'))).toBe(true);
+    }
+    const foreign = reviewWorkerJobEvidence({workerJob:workerJob(),worktreeRoot},
+      {...options,nextBuild:{evidence:build,policy:{...policy.nextBuild,...policy}}});
+    expect(foreign.findings.map(f => f.code)).toContain('NEXT_WORKER_CONTEXT_MISMATCH');
+  });
+  it('persists Next failures through the existing host Guardian review entry point', async () => {
+    const dir = await makeTempDir();
+    const {build,policy} = nextFixture();
+    const nextPolicy = {...policy.nextBuild,...policy,root:worktreePath,headSha,
+      branch:'worker/jarvis-004d-smoke-003'};
+    await mkdir(join(dir,'outputs/worker/jobs'),{recursive:true});
+    await writeFile(join(dir,'outputs/worker/jobs/JARVIS-004D-RUN-004.json'),JSON.stringify(workerJob()));
+    const result = await runGuardianReview({reviewId:'NEXT-HOST',workerJobId:'JARVIS-004D-RUN-004'}, {
+      cwd:dir,env:{AMON_WORKTREE_ROOT:worktreeRoot},now:() => new Date(policy.now),
+      nextBuild:{policy:nextPolicy,evidence:{...build,root:worktreePath,headSha,
+        worktreeHeadShaAfter:headSha,branch:nextPolicy.branch,exitCode:1}},
+    });
+    expect(result.verdict).toBe('BLOCKED');
+    expect(result.findings.map(f => f.code)).toContain('NEXT_BUILD_EXIT_FAILED');
+    expect(JSON.parse(await readFile(getGuardianReviewPath('NEXT-HOST',dir),'utf8'))).toEqual(result);
+  });
   it("returns PASS for valid coding tool evidence", () => {
     const result = review(workerJob());
 

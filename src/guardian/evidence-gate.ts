@@ -5,12 +5,15 @@ import { dirname, isAbsolute, join, relative, resolve } from "path";
 import { resolveWorkspaceRoot } from "../worker/host";
 import { CodingToolEvidence, WorkerJobEvidence, WorkerJobState } from "../worker/types";
 import { GuardianFinding, GuardianReview, GuardianReviewContext, GuardianReviewInput, GuardianVerdict } from "./types";
+import { NextBuildPolicy, reviewNextBuildEvidence } from './next-build';
 
 export const GUARDIAN_POLICY_VERSION = "guardian-evidence-v0.1" as const;
 
 const SUPPORTED_CODING_TOOLS = new Set(["opencode"]);
 
 export interface GuardianReviewDeps {
+  /** Host-selected requirements and observations; never loaded from worker evidence. */
+  nextBuild?: { evidence: unknown; policy: NextBuildPolicy };
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   existsSync?: (path: string) => boolean;
@@ -180,7 +183,9 @@ function reviewCodingToolEvidence(context: GuardianReviewContext): GuardianFindi
   return findings;
 }
 
-export function reviewWorkerJobEvidence(context: GuardianReviewContext, options: { reviewId: string; workerJobId: string; reviewedAt: string }): GuardianReview {
+export function reviewWorkerJobEvidence(context: GuardianReviewContext, options: {
+  reviewId: string; workerJobId: string; reviewedAt: string; nextBuild?: GuardianReviewDeps['nextBuild'];
+}): GuardianReview {
   const findings: GuardianFinding[] = [];
   const job = context.workerJob;
 
@@ -190,6 +195,16 @@ export function reviewWorkerJobEvidence(context: GuardianReviewContext, options:
     findings.push(...reviewCodingToolEvidence(context));
   }
 
+  if (Object.hasOwn(options,'nextBuild')) {
+    const next = options.nextBuild;
+    findings.push(...reviewNextBuildEvidence(next?.evidence,next?.policy as NextBuildPolicy).findings);
+    if (!next?.policy || !isCodingToolEvidence(job.evidence) ||
+        next.policy.root !== job.evidence.worktreePath || next.policy.headSha !== job.evidence.worktreeHeadShaAfter ||
+        next.policy.branch !== job.evidence.worktreeBranchAfter || next.policy.now !== options.reviewedAt) {
+      findings.push({code:'NEXT_WORKER_CONTEXT_MISMATCH',severity:'error',
+        message:'Next build policy must identify the reviewed worker revision, worktree and review time'});
+    }
+  }
   const verdict = verdictFor(findings);
   return {
     reviewId: options.reviewId,
@@ -238,6 +253,7 @@ export async function runGuardianReview(input: GuardianReviewInput, deps: Guardi
       reviewId: input.reviewId,
       workerJobId: input.workerJobId,
       reviewedAt: now().toISOString(),
+      ...(Object.hasOwn(deps,'nextBuild') ? {nextBuild:deps.nextBuild} : {}),
     }
   );
 

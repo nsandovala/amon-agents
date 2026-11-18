@@ -1,8 +1,9 @@
 import { isAbsolute, relative, resolve } from 'path';
 import { GuardianVerdict } from '../guardian/types';
 import type { Provider } from '../llm/call-llm';
+import { reviewNextBuildEvidence, NextBuildRequirements, NextBuildReview } from '../guardian/next-build';
 
-export interface Decision { verdict: GuardianVerdict; reasons: string[] }
+export interface Decision { verdict: GuardianVerdict; reasons: string[]; nextBuild?: NextBuildReview }
 const decision = (reasons: string[]): Decision => ({ verdict: reasons.length ? 'BLOCKED' : 'PASS', reasons });
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
@@ -64,9 +65,11 @@ export interface RuntimeCheck {
 export interface RuntimeReport {
   schemaVersion: '1.0'; runId: string; root: string; headSha: string; branch: string;
   observedAt: string; checks: RuntimeCheck[];
+  nextBuild?: unknown;
 }
 export function isRuntimeReport(v: unknown): v is RuntimeReport {
-  return object(v) && exact(v,['schemaVersion','runId','root','headSha','branch','observedAt','checks']) &&
+  return object(v) && exact(v,['schemaVersion','runId','root','headSha','branch','observedAt','checks',
+    ...(Object.hasOwn(v,'nextBuild') ? ['nextBuild'] : [])]) &&
     v.schemaVersion === '1.0' && text(v.runId) && text(v.root) && isAbsolute(v.root) && sha(v.headSha) &&
     text(v.branch) && date(v.observedAt) && Array.isArray(v.checks) && v.checks.every(c =>
       object(c) && exact(c,['id','layer','outcome','evidenceRef','detail']) &&
@@ -79,6 +82,7 @@ const realLayers: Record<CheckId, Layer[]> = {
 export function releaseGate(v: unknown, policy: {
   runId: string; root: string; headSha: string; branch: string; startedAt: string; now: string;
   required: CheckId[]; guardianVerdict: GuardianVerdict;
+  nextBuild?: NextBuildRequirements;
 }): Decision {
   if (!isRuntimeReport(v)) return decision(['INVALID_RUNTIME_REPORT']);
   const errors: string[] = [];
@@ -95,6 +99,15 @@ export function releaseGate(v: unknown, policy: {
   }
   if (new Set(v.checks.map(c => c.id)).size !== v.checks.length) errors.push('DUPLICATE_CHECK');
   if (v.checks.some(c => c.outcome === 'failed')) errors.push('OBSERVED_FAILURE');
+  if (Object.hasOwn(policy,'nextBuild')) {
+    // Envelope identity wins; observations and nested requirements cannot change it.
+    const nextBuild = reviewNextBuildEvidence(v.nextBuild, {...policy.nextBuild,
+      runId:policy.runId,root:policy.root,headSha:policy.headSha,branch:policy.branch,
+      startedAt:policy.startedAt,now:policy.now} as Parameters<typeof reviewNextBuildEvidence>[1]);
+    if (nextBuild.verdict !== 'PASS') errors.push(...nextBuild.findings.filter(f => f.severity !== 'info').map(f => f.code));
+    return {...decision(errors),nextBuild};
+  }
+  if (Object.hasOwn(v,'nextBuild')) errors.push('NEXT_REQUIREMENTS_MISSING');
   return decision(errors);
 }
 

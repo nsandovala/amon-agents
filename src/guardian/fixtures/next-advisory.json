@@ -1,0 +1,36 @@
+{
+  "ghsa_id": "GHSA-7m27-7ghc-44w9",
+  "html_url": "https://github.com/advisories/GHSA-7m27-7ghc-44w9",
+  "published_at": "2025-01-03T20:19:29Z",
+  "updated_at": "2025-01-07T16:24:09Z",
+  "withdrawn_at": null,
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "next"
+      },
+      "vulnerable_version_range": ">= 13.0.0, < 13.5.8",
+      "first_patched_version": "13.5.8",
+      "vulnerable_functions": []
+    },
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "next"
+      },
+      "vulnerable_version_range": ">= 14.0.0, < 14.2.21",
+      "first_patched_version": "14.2.21",
+      "vulnerable_functions": []
+    },
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "next"
+      },
+      "vulnerable_version_range": ">= 15.0.0, < 15.1.2",
+      "first_patched_version": "15.1.2",
+      "vulnerable_functions": []
+    }
+  ]
+}
