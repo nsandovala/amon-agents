@@ -2,6 +2,8 @@ import { isAbsolute, relative, resolve } from 'path';
 import { GuardianVerdict } from '../guardian/types';
 import type { Provider } from '../llm/call-llm';
 import { reviewNextBuildEvidence, NextBuildRequirements, NextBuildReview } from '../guardian/next-build';
+import { reviewHostRelease } from '../guardian/next-build-collector';
+import { requireLocalNextHost } from '../guardian/release-source';
 
 export interface Decision { verdict: GuardianVerdict; reasons: string[]; nextBuild?: NextBuildReview }
 const decision = (reasons: string[]): Decision => ({ verdict: reasons.length ? 'BLOCKED' : 'PASS', reasons });
@@ -83,6 +85,8 @@ export function releaseGate(v: unknown, policy: {
   runId: string; root: string; headSha: string; branch: string; startedAt: string; now: string;
   required: CheckId[]; guardianVerdict: GuardianVerdict;
   nextBuild?: NextBuildRequirements;
+  /** Presence declares a host release; cannot fall back to legacy observation-only checks. */
+  releaseHost?: unknown;
 }): Decision {
   if (!isRuntimeReport(v)) return decision(['INVALID_RUNTIME_REPORT']);
   const errors: string[] = [];
@@ -99,11 +103,22 @@ export function releaseGate(v: unknown, policy: {
   }
   if (new Set(v.checks.map(c => c.id)).size !== v.checks.length) errors.push('DUPLICATE_CHECK');
   if (v.checks.some(c => c.outcome === 'failed')) errors.push('OBSERVED_FAILURE');
+  if (!Object.hasOwn(policy,'releaseHost')) errors.push(...requireLocalNextHost(policy.root));
+  let buildEvidence = v.nextBuild;
+  if (Object.hasOwn(policy,'releaseHost')) {
+    const host = reviewHostRelease(policy);
+    errors.push(...host.reasons);
+    // Worker-provided builds are never a substitute for the authenticated host record.
+    if (Object.hasOwn(v,'nextBuild')) errors.push('NEXT_WORKER_BUILD_NOT_ACCEPTED');
+    buildEvidence = host.evidence;
+    if (host.stack === 'next' && !policy.nextBuild) errors.push('NEXT_REQUIREMENTS_MISSING');
+    if (!host.stack || host.reasons.length) return decision([...new Set(errors)]);
+  }
   if (Object.hasOwn(policy,'nextBuild')) {
     // Envelope identity wins; observations and nested requirements cannot change it.
-    const nextBuild = reviewNextBuildEvidence(v.nextBuild, {...policy.nextBuild,
+    const nextBuild = reviewNextBuildEvidence(buildEvidence, {...policy.nextBuild,
       runId:policy.runId,root:policy.root,headSha:policy.headSha,branch:policy.branch,
-      startedAt:policy.startedAt,now:policy.now} as Parameters<typeof reviewNextBuildEvidence>[1]);
+      startedAt:policy.startedAt,now:Object.hasOwn(policy,'releaseHost') ? new Date().toISOString() : policy.now} as Parameters<typeof reviewNextBuildEvidence>[1]);
     if (nextBuild.verdict !== 'PASS') errors.push(...nextBuild.findings.filter(f => f.severity !== 'info').map(f => f.code));
     return {...decision(errors),nextBuild};
   }

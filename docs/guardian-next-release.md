@@ -1,4 +1,4 @@
-# Guardian Next.js release evidence — increment 1
+# Guardian Next.js release evidence — host collection
 
 `src/guardian/next-build.ts` adds a deterministic, read-only evidence check to the
 existing Guardian and `releaseGate`. It starts no build, agent, server or network
@@ -6,11 +6,17 @@ request, changes no authorization, and supplies no acceptance override.
 
 ## Integration and authority
 
-The human-approved host requirements select `nextBuild: NextBuildRequirements`
-alongside the existing release requirements. For Next.js releases the host MUST
-set this field; an omitted build then blocks even when the worker Guardian passed.
-Existing non-Next callers retain their contract. This increment does not discover
-frameworks from disk or automatically opt existing consumers into a new policy.
+`releaseGate` now detects existing local npm Next projects from `package.json`
+and `package-lock.json`. Omitting every Next/host field blocks with
+`NEXT_HOST_CONTEXT_REQUIRED`; ambiguous manifests/locks block as well. A declared
+host release (`policy.releaseHost`) always requires a live, registered source root
+and current mission authorization. Detection of Next makes `nextBuild` mandatory;
+there is no worker opt-out. Non-Next observation contracts remain compatible.
+
+The legacy pure-observation API still supports offline historical reports whose
+roots do not exist locally. It is not an authenticated release host or deployment
+permission. Production host integrations must always declare `releaseHost`; the
+worker cannot select the host entry point, requirements file or registered root.
 
 The runtime observation has one optional `nextBuild` object. Neither it nor worker
 output may supply acceptance criteria, warning exceptions or advisory exclusions.
@@ -82,10 +88,14 @@ summaries containing `/warning` or `/warn` are not diagnostics; a genuine warnin
 about either route still blocks. Tracing,
 `outputFileTracingRoot`, inferred workspace root and multiple-lockfile warnings
 receive `NEXT_TRACING_WARNING`; all other warnings receive
-`NEXT_WARNING_UNCLASSIFIED`. Both block in this increment. There is no agent
+`NEXT_WARNING_UNCLASSIFIED`. Both block. The exact documented Next CI notice
+`No build cache found` with its full canonical message and documentation URL is
+retained as informational `NEXT_BUILD_CACHE_COLD`; it describes build performance,
+not an incomplete build (https://nextjs.org/docs/messages/no-cache). Additional
+text or another diagnostic remains blocking. There is no agent
 allowlist or suppression. Findings point to combined stdout/stderr line numbers
-instead of echoing potentially sensitive raw text. The host retains the full
-logs; this library neither persists nor redacts them. Future diagnostic formats
+instead of echoing potentially sensitive raw text. The host collector captures both streams and classifies diagnostics before
+redacting credentials. Legacy callers remain responsible for their own logs. Future diagnostic formats
 without recognizable markers require an explicit parser update and tests.
 
 ## Version and security evidence
@@ -146,3 +156,159 @@ Primary references:
 - <https://nextjs.org/docs/messages/non-standard-node-env>
 - <https://nextjs.org/docs/app/api-reference/config/next-config-js/output>
 - <https://github.com/advisories/GHSA-7m27-7ghc-44w9>
+
+
+## GUARDIAN-NEXT-HOST-001: authorized host collection
+
+No second Guardian is introduced. `collectNextBuild` in
+`src/guardian/next-build-collector.ts` produces observations for the existing
+`reviewNextBuildEvidence` and `releaseGate`. The existing standards CLI `release`
+mode also invokes the host checks when its trusted requirements contain
+`releaseHost`; it never executes a build implicitly. The collector is an explicit
+host-side library call, not a worker tool, MCP execution endpoint or new agent.
+
+The host supplies `ReleaseHostRequirements`:
+
+- `declaredStack`: `auto` or `next`; never supplied by worker JSON.
+- `repositoryAlias`, `mission`, `assignmentId`, `storeDirectory`: existing registered
+  host identity, `MissionContract` and private `ApprovalStore`. `canPerform(...,
+  'verify', approvalContext(...))` checks the real host clock and current signed
+  grants before execution, after execution and at each release review. No grant is
+  created by the collector. Mission plan/base/branch and repository must match.
+- `sourceSha256`: the host-reviewed source pin from `inspectReleaseSource(root)`.
+- `dependenciesSha256`: the host pin of the local, lockfile-installed dependency
+  directory from `directoryDigest(root + '/node_modules', 'dependencies')`.
+- `timeoutMs`: explicit host bound (100 ms–30 min) for the owned build process group.
+- `buildRecord`: the authenticated `result-UUID` returned by collection. It is an
+  output reference selected by the host, not an arbitrary worker path.
+
+The outer release policy keeps its existing run/root/branch/HEAD/start time,
+Guardian verdict, runtime requirements and `nextBuild` security/environment
+requirements. The latter must contain the exact host-read lockfile bytes, host
+Node/platform, and approved advisory scope. This collector currently accepts
+installation with unset `NODE_ENV` only; the host must establish that provenance
+when installing and pinning dependencies. A later install cannot be inferred from
+build logs. The build environment itself is freshly constructed and recorded.
+
+Host sequence (all objects below come from approved host configuration):
+
+```ts
+const collected = await collectNextBuild(trustedPolicy);
+const decision = releaseGate(workerRuntimeReport, {
+  ...trustedPolicy,
+  releaseHost: { ...trustedPolicy.releaseHost, buildRecord: collected.recordName },
+  now: new Date().toISOString(),
+});
+```
+
+`workerRuntimeReport` contains runtime observations only. Including `nextBuild`,
+requirements, exclusions, approvals or a host context in worker observations
+blocks; no spread/merge of worker policy into host policy is permitted. A valid
+build does not bypass required HTTP/browser/auth/business checks or worker Guardian.
+
+### Source, execution and artifact binding
+
+The collector requires a canonical standalone npm project, clean Git state, one
+stable resolved Next installation and matching manifest/lock declarations. npm
+v2/v3 lockfiles are supported. Workspaces, multiple lockfiles, linked Next packages,
+source symlinks, external dependency symlinks, `.env*` source files and custom build
+output directories are deliberately unsupported and fail closed. Local npm `.bin`
+symlinks resolving inside the pinned dependency directory are accepted.
+
+Source hashes cover file bytes, executable bits and names, including ignored and
+untracked files; only root `.git`, `node_modules` and `.next` are excluded. HEAD,
+branch, manifest, lockfile and source content are observed before/after execution
+and again at release review. Dependencies are independently pinned and rehashed.
+Dirty source cannot be certified by a prior clean revision or by trusting status
+strings supplied by a worker.
+
+Only the pinned local `node_modules/next/dist/bin/next` is invoked with the current
+host Node executable and the literal argument `build`, without a shell or npm
+lifecycle scripts. Both streams are drained through process close, with actual
+exit/signal/timeout, wall timestamps, monotonic duration, PID, Node binary hash,
+argv and an allowlisted environment. No parent credentials, `NODE_OPTIONS`, proxy
+or provider variables are inherited. `HOME`/`TMPDIR` are private run directories;
+`NODE_ENV=production`, telemetry disabled. The explicitly bounded process group is
+terminated only on its own timeout; unrelated processes are never addressed.
+
+`.next` must be absent at entry. The collector never deletes a prior build to make
+it pass. `BUILD_ID` must be a fresh regular file created during this process; the
+entire `.next` tree is hashed, so a later artifact replacement also blocks.
+Custom `distDir` requires a future approved contract, not a guessed artifact path.
+
+### Reproducible evidence
+
+The existing `ApprovalStore.writeExecutionRecord` persists immutable HMAC-bound
+`attempt-UUID` and `result-UUID` records outside source, with its existing private
+ownership/mode checks. The `next-host-build/1` result contains:
+
+- run and approved plan hash; exact Next requirements hash;
+- full source identity snapshots and dependency hashes before/after;
+- the unchanged Next build observation contract;
+- artifact content/tree hashes, size, BUILD_ID and creation observation;
+- process identity/environment, raw-stream SHA-256 values, redacted stdout/stderr,
+  completeness/redaction markers and blocking reason codes.
+
+Raw streams stay in memory only. Known parent secret values and recognizable
+credential formats are redacted across chunk boundaries before persistence.
+Diagnostics are classified on the originals so redaction cannot erase a blocking
+failure. Capture above 1 MiB is marked incomplete and blocks; it is never certified
+as a complete log. No worker can authenticate a replacement record without the
+trusted store key. The live release check also rejects records from other runs,
+plans, source trees, dependency installations, or altered artifacts.
+
+### Validation and explicit limits
+
+`host-release.test.ts` covers mandatory activation, legacy compatibility and the
+narrow cache diagnostic. `next-build-collector.test.ts` uses real Node child
+processes and synthetic Next binaries for adversarial cases. Its explicit
+`AMON_NEXT_REAL_FIXTURE` opt-in runs an authentic locally installed Next build only
+under `/private/tmp/GUARDIAN-NEXT-HOST-001/real-next-fixture*`; ordinary unit/full
+suite runs do not install packages, fetch advisories or run product repositories.
+The fixture creates disposable Git history and synthetic test-host grants solely
+inside its temporary scope. It never grants permission for AMON product work.
+
+Trust limits remain those of the existing local approval host: the same OS owner,
+root, a stolen store key, and arbitrary hostile code already approved for execution
+are outside its security boundary. File snapshots are not an OS filesystem sandbox
+and do not guarantee detection of a concurrent write-and-restore between samples.
+The host must exclusively own the approved build root while collecting/reviewing.
+Secret redaction is defense in depth, not a guarantee for arbitrary encoded secrets;
+credential-bearing repositories are unsupported. The pinned dependency installation
+must itself be obtained from the approved lockfile by the host. This increment does
+not claim a complete live advisory inventory or web/runtime acceptance.
+
+Convergence PR #11 is a **later QA candidate only**. This task neither runs commands
+there nor changes its code, dependencies, evidence, branch or deployment.
+
+
+### Local review closure: declared/resolved/installed version coherence
+
+`inspectReleaseManifests` additionally requires the resolved stable Next version
+in `packages["node_modules/next"].version` to satisfy the identical root declaration
+in both manifest and lockfile. A resolved/installed `15.1.2` with declaration
+`^16.4.6` blocks with `RELEASE_NEXT_RANGE_MISMATCH`; `^15.0.0` with `15.1.2` remains
+valid. The existing `installedDependencies` check still requires the installed
+package version to equal the resolved version, before execution and at review;
+its implementation and dependency pin checks are unchanged.
+
+Supported declaration grammar (maximum 1024 characters): full stable `M.m.p`
+components, optional `=`, `^`, `~`, `>`, `>=`, `<` or `<=`; whitespace-separated
+conjunctions and `||` alternatives. Whitespace around clauses and after operators
+is accepted. Components are canonical nonnegative safe integers, without leading
+zeros. Caret preserves the leftmost nonzero component (`^0.2.5` stays in `0.2`,
+`^0.0.4` is exactly `0.0.4` for stable versions); tilde preserves major/minor.
+These supported semantics follow the npm reference:
+https://github.com/npm/node-semver#caret-ranges-123-025-004 .
+
+Unsupported declarations block with `RELEASE_NEXT_RANGE_UNSUPPORTED`: partials,
+wildcards, tags, `v` prefixes, prereleases/build metadata, hyphen ranges, comma
+separators, package aliases/URLs/paths, empty alternatives or unknown syntax. Every
+alternative is validated even if another alternative already matches. No coercion
+or dependency/package-lock change is used. Noncanonical or unsupported resolved
+versions block with `RELEASE_NEXT_VERSION_INVALID`. Both the explicit host path and
+automatic detection retain these diagnostics.
+
+Publication remains unprepared and unauthorized. After a new human approval, the
+future PR must use a **new branch based on origin/main at 400cf27b**, not the branch
+or PR #14 already merged. This local closure does not move or create branches.
