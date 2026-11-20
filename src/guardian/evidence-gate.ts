@@ -116,7 +116,7 @@ function reviewNextWorkerContent(worker: WorkerJobEvidence | undefined, build: u
   return findings;
 }
 
-function verdictFor(findings: GuardianFinding[]): GuardianVerdict {
+export function verdictFor(findings: GuardianFinding[]): GuardianVerdict {
   if (findings.some((item) => item.severity === "error")) return "BLOCKED";
   if (findings.some((item) => item.severity === "human_review")) return "HUMAN_REVIEW";
   if (findings.some((item) => item.severity === "warn")) return "WARN";

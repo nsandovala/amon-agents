@@ -25,6 +25,23 @@ class InspectorTests(unittest.TestCase):
             self.assertEqual(result['externalLinks'], ['node_modules.linked-backup'])
             self.assertEqual(result['dependencyState'], 'local')
 
+    def test_directory_links_are_not_traversed_and_broken_links_are_reported(self):
+        with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
+            root = Path(folder)
+            (root/'canonical').mkdir()
+            (root/'adapter').symlink_to('canonical')
+            real_iterdir = Path.iterdir
+            def guarded(path):
+                if path == root/'adapter':
+                    raise AssertionError('must not traverse directory link')
+                return real_iterdir(path)
+            with patch.object(Path, 'iterdir', guarded):
+                self.assertTrue(module.inspect(root)['metadataComplete'])
+            (root/'broken').symlink_to('missing')
+            result = module.inspect(root)
+            self.assertFalse(result['metadataComplete'])
+            self.assertTrue(any('broken' in e for e in result['errors']))
+
     def test_dataless_metadata_never_reads_file_content(self):
         with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
             root = Path(folder)
