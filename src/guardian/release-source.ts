@@ -10,7 +10,8 @@ export const inside = (root: string, file: string): boolean => {
   return rel === '' || (!rel.startsWith('..'+path.sep) && rel !== '..' && !path.isAbsolute(rel));
 };
 export function gitRead(root: string, ...args: string[]): string {
-  return execFileSync('/usr/bin/git',['-C',root,...args], {encoding:'utf8',stdio:['ignore','pipe','pipe'],
+  return execFileSync('/usr/bin/git',['-c','core.fsmonitor=false','-C',root,...args], {encoding:'utf8',stdio:['ignore','pipe','pipe'],
+    timeout:3000,killSignal:'SIGKILL',maxBuffer:1024*1024,
     env:{PATH:'/usr/bin:/bin',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}}).trim();
 }
 

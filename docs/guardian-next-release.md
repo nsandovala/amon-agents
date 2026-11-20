@@ -179,6 +179,16 @@ The host supplies `ReleaseHostRequirements`:
 - `dependenciesSha256`: the host pin of the local, lockfile-installed dependency
   directory from `directoryDigest(root + '/node_modules', 'dependencies')`.
 - `timeoutMs`: explicit host bound (100 ms–30 min) for the owned build process group.
+- `evidenceRecords`: optional host-selected `result-UUID` names in the same private
+  ApprovalStore, each containing an existing `EvidenceContract` value authenticated
+  by `writeExecutionRecord`. A trusted executor must persist its own observed evidence;
+  signing a worker's claimed `done` is not authentication of completion. No evidence
+  is manufactured or imported automatically. Missing referenced evidence blocks with
+  `RELEASE_AUTHENTICATED_EVIDENCE_MISSING`. Only assignment completion evidence bound
+  to this mission, assignment, planHash, branch, base SHA and selected human approval's
+  dates is supported; arbitrary paths, worker evidence and mismatches block. The host
+  reloads and authenticates the records at every authorization check, including release.
+  Existing `canPerform` still verifies dependencies and live approval/revocation/expiry.
 - `buildRecord`: the authenticated `result-UUID` returned by collection. It is an
   output reference selected by the host, not an arbitrary worker path.
 
@@ -230,6 +240,20 @@ argv and an allowlisted environment. No parent credentials, `NODE_OPTIONS`, prox
 or provider variables are inherited. `HOME`/`TMPDIR` are private run directories;
 `NODE_ENV=production`, telemetry disabled. The explicitly bounded process group is
 terminated only on its own timeout; unrelated processes are never addressed.
+Parent `close` alone does not finish collection: the host probes the owned POSIX group.
+On timeout, SIGTERM escalates to SIGKILL after one second even if the parent closed.
+Collection waits for confirmed group absence and drained pipes, with a final two-second
+bound after escalation. Unconfirmed termination records
+`NEXT_BUILD_PROCESS_GROUP_UNCONFIRMED` and remains blocking; open pipes are destroyed
+and the host timer is cleared. A confirmed absent group is never signalled again.
+This is not isolation against processes deliberately escaping the group (`setsid`,
+for example); the OS owner/root and exclusive host control remain trusted. Windows
+process groups are unsupported and block before spawn.
+
+Read-only Git inspection imposes `-c core.fsmonitor=false` on each command, including
+when the repository configures a hook. Each Git command has a three-second timeout
+and SIGKILL termination, plus a 1 MiB output bound. This does not alter repository or
+user configuration.
 
 `.next` must be absent at entry. The collector never deletes a prior build to make
 it pass. `BUILD_ID` must be a fresh regular file created during this process; the

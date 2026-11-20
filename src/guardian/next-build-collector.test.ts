@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { afterEach, describe, expect, it } from 'vitest';
+import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { EvidenceContract, planHash } from '../mission/contracts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fixture } from '../mission/demo/fixtures';
 import { ApprovalStore } from '../mission/approval-store';
 import { approveLocal, localApproverId, revokeLocal } from '../mission/approval-host';
@@ -101,6 +103,7 @@ describe('authorized host collector (real child processes, synthetic Next binary
     const record=f.store.readExecutionRecord(result.recordName) as any;
     expect(record.observation).toMatchObject({exitCode:0,completed:true,logComplete:true,treeClean:true});
     expect(record.process.pid).toBeGreaterThan(0);expect(record.process.durationMs).toBeGreaterThan(0);
+    expect(record.process.groupTerminated).toBe(true);expect(alive(-record.process.pid)).toBe(false);
     expect(record.artifact.treeSha256).toHaveLength(64);expect(record.sourceBefore).toEqual(record.sourceAfter);
   });
   it('blocks apparently successful output with exit 1', async () => {
@@ -206,6 +209,188 @@ if(process.env.GUARDIAN_TEST_SECRET)throw Error('inherited');`);
     delete manifest.dependencies.next;fs.writeFileSync(path.join(f.root,'package.json'),JSON.stringify(manifest));
     expect(()=>inspectReleaseSource(f.root)).toThrow('RELEASE_MANIFEST_LOCK_MISMATCH');
   });
+});
+
+// These records are written by the synthetic trusted test host, never by the build worker.
+async function dependentSetup() {
+  const f=await setup();
+  await revokeLocal(f.store,f.store.snapshots()[0].authorizationId,accept);
+  const m=f.host.mission, qa=m.assignments[0];
+  const dependency={...structuredClone(qa),assignmentId:'prior-qa',status:'completed' as const,evidenceRefs:['PRIOR-QA']};
+  qa.dependencies=[dependency.assignmentId];m.assignments.unshift(dependency);m.evidenceRefs=['PRIOR-QA'];
+  for (const id of ['prior-qa','qa']) await approveLocal(f.store,m,id,'verify',new Date(Date.now()+3600_000).toISOString(),accept);
+  const evidence: EvidenceContract={source:'assignment',jobId:'PRIOR-QA-JOB',action:'verify',status:'done',
+    observedAt:new Date().toISOString(),verifiedBaseSha:m.baseSha,verifiedBranch:m.branch,
+    evidenceReference:'PRIOR-QA',missionId:m.missionId,assignmentId:'prior-qa',planHash:planHash(m)};
+  const recordName=`result-${randomUUID()}`;
+  f.store.writeExecutionRecord(recordName,evidence);
+  f.host.evidenceRecords=[recordName];
+  return {...f,evidence,recordName};
+}
+function alive(pid: number): boolean {
+  try {process.kill(pid,0);return true;} catch (e) {if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false;throw e;}
+}
+const delay=(ms: number) => new Promise(resolve=>setTimeout(resolve,ms));
+
+describe('PR15 P2 regressions', () => {
+  it.each(['timeout','normal-exit'])('P2-A regression: kills a persistent descendant with independent output after parent %s', async mode => {
+    const descendant=`const fs=require('fs');process.on('SIGTERM',()=>{});
+      fs.writeFileSync(process.env.HOME+'/descendant',String(process.pid));
+      setInterval(()=>fs.appendFileSync(process.env.HOME+'/heartbeat','x'),30);
+      setTimeout(()=>process.exit(0),8000);`;
+    const f=await setup(`const {spawn}=require('child_process');const fs=require('fs');
+      const fd=fs.openSync(process.env.HOME+'/child-output','w');
+      spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:['ignore',fd,fd]});
+      ${mode === 'timeout' ? 'setInterval(()=>{},1000);' : "setTimeout(()=>process.exit(0),200);"}`);
+    f.host.timeoutMs=500;
+    const result=await f.collect();const record=f.store.readExecutionRecord(result.recordName) as any;
+    const pid=Number(fs.readFileSync(path.join(record.process.environment.HOME,'descendant'),'utf8'));
+    try {
+      expect(record.process.groupTerminated).toBe(true);
+      expect(alive(-record.process.pid)).toBe(false);
+      await delay(1200);
+      expect(record.observation.timedOut).toBe(true);
+      expect(alive(pid)).toBe(false);
+      expect(alive(-record.process.pid)).toBe(false);
+      expect(f.review().verdict).toBe('BLOCKED');
+      console.log('P2-A owned parent/group',record.process.pid,'descendant',pid,'absent');
+    } finally {
+      // Exact descendant created by this test, authorized by the ticket's residual cleanup.
+      if (alive(pid)) process.kill(pid,'SIGKILL');
+      for (let i=0;i<100 && alive(pid);i++) await delay(20);
+      expect(alive(pid)).toBe(false);
+    }
+  },15000);
+  it('P2-B regression: accepts authenticated evidence for a valid dependency mission', async () => {
+    const f=await dependentSetup();
+    expect((await f.collect()).reasons).toEqual([]);
+    expect(f.review().verdict).toBe('PASS');
+  });
+  it('P2-C regression: blocks a repository fsmonitor hook and still detects changes', async () => {
+    const f=await setup();const marker=path.join(f.parent,'hook-ran'), hook=path.join(f.root,'.git/hooks/benign-fsmonitor');
+    fs.writeFileSync(hook,`#!/bin/sh\nprintf invoked > '${marker}'\nprintf '\\0'\n`,{mode:0o700});
+    git(f.root,'config','core.fsmonitor',hook);
+    const config=fs.readFileSync(path.join(f.root,'.git/config'));
+    git(f.root,'status','--porcelain');expect(fs.existsSync(marker)).toBe(true);
+    fs.unlinkSync(marker);
+    expect(gitRead(f.root,'status','--porcelain')).toBe('');
+    expect(fs.existsSync(marker)).toBe(false);
+    fs.appendFileSync(path.join(f.root,'page.js'),'// real change\n');
+    expect(gitRead(f.root,'status','--porcelain')).toContain('page.js');
+    expect(inspectReleaseSource(f.root).treeClean).toBe(false);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.readFileSync(path.join(f.root,'.git/config'))).toEqual(config);
+    console.log('P2-C benign hook positive control ran; host blocked hook; real change detected; config unchanged');
+  });
+});
+
+describe('PR15 P2 fail-closed authorization and lifecycle', () => {
+  it('leaves an unrelated process group alive during build timeout cleanup', async () => {
+    const sentinel=spawn(process.execPath,['-e','setInterval(()=>{},1000);setTimeout(()=>process.exit(0),8000);'],
+      {detached:true,stdio:'ignore'});
+    const closed=new Promise<void>(resolve=>sentinel.once('close',()=>resolve()));
+    try {
+      const f=await setup('setInterval(()=>{},1000);');f.host.timeoutMs=100;
+      const result=await f.collect(), record=f.store.readExecutionRecord(result.recordName) as any;
+      expect(record.process.groupTerminated).toBe(true);expect(alive(-record.process.pid)).toBe(false);
+      expect(alive(sentinel.pid!)).toBe(true);
+    } finally {sentinel.kill('SIGTERM');await closed;}
+    expect(alive(sentinel.pid!)).toBe(false);
+  });
+  it('blocks unconfirmed group termination and bounds handles/timers', async () => {
+    const f=await setup();f.host.timeoutMs=100;
+    const kill=process.kill.bind(process), start=Date.now();
+    const spy=vi.spyOn(process,'kill').mockImplementation((pid,signal) => {
+      if (pid<0 && signal === 0) throw Object.assign(new Error('unverifiable group'),{code:'EPERM'});
+      return kill(pid,signal);
+    });
+    let record: any;
+    try {
+      const result=await f.collect();record=f.store.readExecutionRecord(result.recordName);
+      expect(result.reasons).toContain('NEXT_BUILD_PROCESS_GROUP_UNCONFIRMED');
+      expect(record.process.groupTerminated).toBe(false);expect(record.observation.completed).toBe(false);
+      expect(f.review().verdict).toBe('BLOCKED');
+      expect(Date.now()-start).toBeLessThan(4500);
+    } finally {spy.mockRestore();}
+    expect(alive(-record.process.pid)).toBe(false);
+  },6000);
+  it('requires authenticated evidence instead of a self-declared completed dependency', async () => {
+    const f=await dependentSetup();delete f.host.evidenceRecords;
+    await expect(f.collect()).rejects.toThrow('RELEASE_AUTHENTICATED_EVIDENCE_MISSING');
+    expect(f.review().reasons).toContain('RELEASE_AUTHENTICATED_EVIDENCE_MISSING');
+    expect(fs.existsSync(path.join(f.root,'.next'))).toBe(false);
+  });
+  it('rejects missing, arbitrary and duplicate host record references', async () => {
+    const f=await dependentSetup();
+    for (const names of [[`result-${randomUUID()}`],['../history.json'],[f.recordName,f.recordName]]) {
+      f.host.evidenceRecords=names;
+      await expect(f.collect()).rejects.toThrow();expect(f.review().verdict).toBe('BLOCKED');
+    }
+    expect(fs.existsSync(path.join(f.root,'.next'))).toBe(false);
+  });
+  it('rejects altered evidence at collection and rechecks its authentication at release', async () => {
+    const f=await dependentSetup();await f.collect();
+    const file=path.join(f.store.directory,f.recordName+'.json'), envelope=JSON.parse(fs.readFileSync(file,'utf8'));
+    envelope.payload=JSON.stringify({...f.evidence,jobId:'ALTERED'});fs.writeFileSync(file,JSON.stringify(envelope));
+    expect(f.review().reasons).toContain('EXECUTION_RECORD_INVALID');
+    await expect(f.collect()).rejects.toThrow('EXECUTION_RECORD_INVALID');
+  });
+  it.each([
+    ['missionId','OTHER-MISSION'],['assignmentId','qa'],['planHash','0'.repeat(64)],
+    ['verifiedBranch','other-branch'],['verifiedBaseSha','0'.repeat(40)],
+    ['evidenceReference','ARBITRARY'],['source','worker'],['status','running'],
+    ['observedAt','2099-01-01T00:00:00.000Z'],['observedAt','2000-01-01T00:00:00.000Z'],['action','deploy'],
+  ])('rejects authenticated but mismatched %s = %s', async (key,value) => {
+    const f=await dependentSetup(), name=`result-${randomUUID()}`;
+    f.store.writeExecutionRecord(name,{...f.evidence,[key]:value});f.host.evidenceRecords=[name];
+    await expect(f.collect()).rejects.toThrow();expect(f.review().verdict).toBe('BLOCKED');
+    expect(fs.existsSync(path.join(f.root,'.next'))).toBe(false);
+  });
+  it('checks approval dates for mission-only references too', async () => {
+    const f=await setup(), m=f.host.mission;
+    m.evidenceRefs=['QA-EVIDENCE'];
+    const e: EvidenceContract={source:'assignment',jobId:'QA-JOB',action:'verify',status:'done',
+      observedAt:'2000-01-01T00:00:00.000Z',verifiedBaseSha:m.baseSha,verifiedBranch:m.branch,
+      evidenceReference:'QA-EVIDENCE',missionId:m.missionId,assignmentId:'qa',planHash:planHash(m)};
+    const name=`result-${randomUUID()}`;f.store.writeExecutionRecord(name,e);f.host.evidenceRecords=[name];
+    await expect(f.collect()).rejects.toThrow('RELEASE_EVIDENCE_APPROVAL_MISMATCH');
+  });
+  it.each(['prior-qa','qa'])('preserves revocation of %s even with signed done evidence', async id => {
+    const f=await dependentSetup();await f.collect();
+    const grant=f.store.snapshots().find(g=>g.assignmentId===id && g.decision==='approved')!;
+    await revokeLocal(f.store,grant.authorizationId,accept);
+    expect(f.review().reasons).toContain('NOT_APPROVED');
+    await expect(f.collect()).rejects.toThrow('NOT_APPROVED');
+  });
+  it('preserves expiry, missing human approval and changed plans', async () => {
+    const f=await dependentSetup();await f.collect();
+    vi.useFakeTimers({toFake:['Date']});
+    try {
+      vi.setSystemTime(new Date(Date.now()+2*3600_000));
+      expect(f.review().reasons).toContain('AUTHORIZATION_EXPIRED_OR_FUTURE');
+      await expect(f.collect()).rejects.toThrow('AUTHORIZATION_EXPIRED_OR_FUTURE');
+    } finally {vi.useRealTimers();}
+    const blank=new ApprovalStore(path.join(f.parent,'unapproved'));
+    blank.initialize({repositoryAliases:['LOCAL-FIXTURE'],allowedActions:['verify']});
+    blank.writeExecutionRecord(f.recordName,f.evidence);f.host.storeDirectory=blank.directory;
+    await expect(f.collect()).rejects.toThrow('AUTHORIZATION_MISSING_OR_AMBIGUOUS');
+    f.host.storeDirectory=f.store.directory;f.host.mission.objective+=' changed';
+    await expect(f.collect()).rejects.toThrow();
+  });
+  it('bounds a genuinely stalled Git index read without changing repository configuration', async () => {
+    const f=await setup(), index=path.join(f.root,'.git/index'), backup=index+'.saved';
+    const config=fs.readFileSync(path.join(f.root,'.git/config'));
+    fs.renameSync(index,backup);execFileSync('/usr/bin/mkfifo',[index]);
+    const start=Date.now();
+    try {
+      expect(()=>gitRead(f.root,'status','--porcelain')).toThrow();
+      expect(Date.now()-start).toBeGreaterThanOrEqual(2900);
+      expect(Date.now()-start).toBeLessThan(4500);
+    } finally {fs.unlinkSync(index);fs.renameSync(backup,index);}
+    expect(gitRead(f.root,'status','--porcelain')).toBe('');
+    expect(fs.readFileSync(path.join(f.root,'.git/config'))).toEqual(config);
+    console.log('P2-C stalled Git index read terminated within host timeout');
+  },6000);
 });
 
 // Explicit opt-in fixture path supplied by this task's trusted test host. Never runs on Convergence.
