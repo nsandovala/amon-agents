@@ -85,21 +85,24 @@ function snapshot(input: PrePrPolicy): CandidateContent {
   const index=gitReadRaw(root,'ls-files','--stage','-z');
   requireRelease(gitReadRaw(root,'ls-files','--unmerged','-z')==='','PREPR_UNMERGED_INDEX');
   requireRelease(!nul(index).some(row=>/^160000 /.test(row)),'PREPR_SUBMODULE_UNSUPPORTED');
-  const diff={committed:gitReadRaw(root,'diff',...diffArgs,mission.baseSha,headSha,'--'),
-    staged:gitReadRaw(root,'diff',...diffArgs,'--cached','--'),unstaged:gitReadRaw(root,'diff',...diffArgs,'--')};
   const changedFiles=[...new Set([
-    ...nul(gitReadRaw(root,'diff','--no-renames','--name-only','-z',mission.baseSha,headSha,'--')),
-    ...nul(gitReadRaw(root,'diff','--no-renames','--name-only','-z','--cached','--')),
-    ...nul(gitReadRaw(root,'diff','--no-renames','--name-only','-z','--')),
+    ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z',mission.baseSha,headSha,'--')),
+    ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--cached','--')),
+    ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--')),
     ...nul(gitReadRaw(root,'ls-files','--others','--exclude-standard','-z')),...ignored,
   ])].sort();
+  // Inspect only path metadata first. Include both sides of renames/deletions in every
+  // diff layer; surviving files alone cannot protect credentials removed from the tree.
+  const inspectedPaths=[...files,...changedFiles];
+  requireRelease(inspectedPaths.every(safeRelative),'PREPR_UNSAFE_PATH');
+  requireRelease(inspectedPaths.every(f=>!f.split('/').some(p=>p!=='.env.example' && /^\.env(?:\.|$)/i.test(p))),'PREPR_ENV_FILE_UNSUPPORTED');
   const allowed=h.assignment.expectedOutputs.files_to_touch;
   requireRelease(changedFiles.every(f=>safeRelative(f) && allowed.includes(f)),'PREPR_OUT_OF_SCOPE');
   // Include tracked deletions in the patch/index, but never read a missing path as content.
   const deleted=new Set(nul(gitReadRaw(root,'ls-files','--deleted','-z')));
   const paths=[...new Set(files)].filter(f=>!deleted.has(f));
-  requireRelease(paths.every(f=>!f.split('/').some(p=>p!=='.env.example' && /^\.env(?:\.|$)/.test(p))),'PREPR_ENV_FILE_UNSUPPORTED');
-  const capture=captureIntegrity(root,paths);
+  const capture=captureIntegrity(root,paths,new Set(changedFiles));
+  requireRelease(!capture.errors.some(e=>e.endsWith('INTEGRITY_SIZE_LIMIT')),'PREPR_SOURCE_TOO_LARGE');
   requireRelease(capture.errors.length===0,'PREPR_INTEGRITY_UNSAFE');
   // Valid internal links are recorded as links; reject changed links into unapproved targets.
   const changedRealPaths=changedFiles.map(f=> {
@@ -107,6 +110,17 @@ function snapshot(input: PrePrPolicy): CandidateContent {
     return entry?.kind==='symlink' ? fs.realpathSync(path.join(root,f)) : path.join(root,f);
   });
   requireRelease(scopeGate({root,changedRealPaths,allowedRealPaths:allowed.map(f=>path.join(root,f)),roadmaps:[]}).verdict==='PASS','PREPR_LINK_OUT_OF_SCOPE');
+  // Literal pathspecs prevent a filename from expanding the vetted scope. Unchanged
+  // bytes are represented by hashes; changed bytes and all three exact diffs are retained.
+  const readDiff=(...revisions:string[])=>{
+    if (!changedFiles.length) return '';
+    try {return gitReadRaw(root,'--literal-pathspecs','diff',...diffArgs,...revisions,'--',...changedFiles);}
+    catch(e) {
+      if (['ENOBUFS','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes((e as NodeJS.ErrnoException).code ?? '')) throw new Error('PREPR_DIFF_TOO_LARGE');
+      throw e;
+    }
+  };
+  const diff={committed:readDiff(mission.baseSha,headSha),staged:readDiff('--cached'),unstaged:readDiff()};
   requireRelease(gitReadRaw(root,'ls-files','--stage','-z')===index &&
     gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none')===status,'PREPR_CONTENT_CHANGED');
   return {root,repositoryUrl:h.policy.repositoryUrl,branch,headSha,baseSha:mission.baseSha,policySha256:h.policySha256,
@@ -120,12 +134,18 @@ function current(input:PrePrPolicy, name:string):Candidate {
   return c;
 }
 /** Freezes read-only evidence, not an approval. All bytes/modes, index and diff layers
- * are signed in the existing store. No checkout, index mutation, commands or model invocation. */
+ * are signed in the existing store (unchanged bytes by digest). No checkout, index mutation or model invocation. */
 export function freezePrePrCandidate(input:PrePrPolicy, clock=()=>new Date()):string {
   const policy=structuredClone(input), content=snapshot(policy);
   requireRelease(JSON.stringify(snapshot(policy))===JSON.stringify(content),'PREPR_CONTENT_CHANGED');
   const candidate:Candidate={kind:'guardian-prepr-candidate/1',candidateId:sha256(JSON.stringify(content)),frozenAt:stamp(clock),content};
-  const name=`fixture-${randomUUID()}`;host(policy).store.writeExecutionRecord(name,candidate);return name;
+  const name=`fixture-${randomUUID()}`;
+  try {host(policy).store.writeExecutionRecord(name,candidate);}
+  catch(e) {
+    if (e instanceof Error && e.message==='EXECUTION_RECORD_TOO_LARGE') throw new Error('PREPR_CANDIDATE_TOO_LARGE');
+    throw e;
+  }
+  return name;
 }
 /** Data-only packet; contains no store key, authorizations or execution capability.
  * A reviewer gets an independent copy. Changes to that copy cannot change the signed candidate. */

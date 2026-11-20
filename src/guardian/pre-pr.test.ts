@@ -8,6 +8,7 @@ import { ApprovalStore } from '../mission/approval-store';
 import { approveLocal, localApproverId, revokeLocal } from '../mission/approval-host';
 import { fixture } from '../mission/demo/fixtures';
 import { planHash } from '../mission/contracts';
+import * as releaseSource from './release-source';
 import { PrePrPolicy, freezePrePrCandidate, prePrReviewPacket, recordPrePrCheck, recordPrePrReview, reviewPrePr } from './pre-pr';
 const roots:string[]=[];
 const git=(root:string,...args:string[])=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',root,...args],
@@ -41,7 +42,7 @@ async function setup(approve=true,dependency=false) {
   const review=()=>reviewPrePr(policy,name);
   return {root,parent,store,policy,name,check,independent,review};
 }
-afterEach(()=>{for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
+afterEach(()=>{vi.restoreAllMocks();for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
 describe('existing Guardian pre-PR composition (synthetic principals; no independent review of this implementation)',()=>{
   it('blocks the callback before execution when stored authorization is missing',async()=>{
     const f=await setup(false),execute=vi.fn(async()=>({exitCode:0,output:'must not run'}));
@@ -221,4 +222,99 @@ describe('existing Guardian pre-PR composition (synthetic principals; no indepen
     const f=await setup();f.independent();f.store.writeExecutionRecord(`result-${randomUUID()}`,{candidateId:prePrReviewPacket(f.policy,f.name).candidateId,status:'done',verdict:'PASS'});
     expect(f.review().review.findings.map(f=>f.code)).toContain('PREPR_CHECK_MISSING');
   });
+});
+
+describe('PR16 P2 regressions (disposable sources, fictitious credentials only)',()=>{
+  it('PR16 P2-A RED: blocks staged environment deletion without storing or exporting its fictitious value',async()=>{
+    const f=await setup(false),fake='PR16_FICTITIOUS_CREDENTIAL_DO_NOT_USE';
+    fs.writeFileSync(path.join(f.root,'.env.local'),'TOKEN='+fake+'\n');
+    git(f.root,'add','.env.local');git(f.root,'commit','-m','Disposable fictitious environment fixture');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('.env.local');
+    fs.unlinkSync(path.join(f.root,'.env.local'));git(f.root,'add','.env.local');
+    let leaked=false,denial:string|undefined;
+    try{const name=freezePrePrCandidate(f.policy);leaked=JSON.stringify(prePrReviewPacket(f.policy,name)).includes(fake);}catch(e){denial=(e as Error).message;}
+    expect({leaked,denial}).toEqual({leaked:false,denial:'PREPR_ENV_FILE_UNSUPPORTED'});
+    expect(fs.readdirSync(f.store.directory).filter(n=>n.endsWith('.json')).some(n=>fs.readFileSync(path.join(f.store.directory,n),'utf8').includes(fake))).toBe(false);
+  });
+  it('PR16 P2-B RED: freezes a tiny change beside an unchanged 3 MiB source file',async()=>{
+    const f=await setup(false),large=('// fixture source'.padEnd(127,'x')+'\n').repeat(3*1024*1024/128);
+    fs.writeFileSync(path.join(f.root,'large.ts'),large);
+    git(f.root,'add','large.ts');git(f.root,'commit','-m','Disposable unchanged large source');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('large.ts');
+    fs.appendFileSync(path.join(f.root,'code.ts'),'small change\n');
+    let name!:string;expect(()=>{name=freezePrePrCandidate(f.policy);}).not.toThrow();
+    const record=f.store.readExecutionRecord(name) as any,packet=prePrReviewPacket(f.policy,name);
+    const entry=record.content.files.find((e:any)=>e.path==='large.ts');
+    expect(entry).toMatchObject({kind:'file',mode:0o644,sha256:releaseSource.sha256(large)});expect(entry).not.toHaveProperty('contentBase64');
+    expect(fs.statSync(path.join(f.store.directory,name+'.json')).size).toBeLessThan(4*1024*1024);
+    expect(packet.candidateId).toBe(releaseSource.sha256(JSON.stringify(record.content)));
+    expect(packet.diff).toEqual(record.content.diff);
+    expect(packet.files).toEqual(record.content.files.filter((e:any)=>record.content.changedFiles.includes(e.path)));
+    expect(Buffer.from(packet.files.find(e=>e.path==='code.ts')!.contentBase64!,'base64').toString()).toContain('small change');
+    expect(reviewPrePr(f.policy,name).adversarialStatus).toBe('NOT_REVIEWED');
+    fs.appendFileSync(path.join(f.root,'large.ts'),'// subsequent change\n');
+    expect(()=>prePrReviewPacket(f.policy,name)).toThrow('PREPR_CONTENT_CHANGED');
+    expect(reviewPrePr(f.policy,name).review.verdict).toBe('BLOCKED');
+    const file=path.join(f.store.directory,name+'.json'),envelope=JSON.parse(fs.readFileSync(file,'utf8'));
+    record.content.files.find((e:any)=>e.path==='large.ts').sha256='0'.repeat(64);envelope.payload=JSON.stringify(record);fs.writeFileSync(file,JSON.stringify(envelope));
+    expect(()=>prePrReviewPacket(f.policy,name)).toThrow('EXECUTION_RECORD_INVALID');
+  });
+  it.each(['unstaged','staged','committed'].flatMap(layer=>['.env','nested/.env.production'].map(file=>({layer,file}))))('blocks $layer deletion of $file before reading content diffs',async({layer,file})=>{
+    const f=await setup(false),fake='PR16_ONLY_FICTITIOUS_VALUE';
+    fs.mkdirSync(path.dirname(path.join(f.root,file)),{recursive:true});fs.writeFileSync(path.join(f.root,file),'TOKEN='+fake+'\n');
+    git(f.root,'add','--',file);git(f.root,'commit','-m','Disposable environment fixture');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push(file);
+    fs.unlinkSync(path.join(f.root,file));if(layer!=='unstaged')git(f.root,'add','--',file);
+    if(layer==='committed')git(f.root,'commit','-m','Disposable deletion');
+    const before=fs.readdirSync(f.store.directory).sort(),read=vi.spyOn(releaseSource,'gitReadRaw'),write=vi.spyOn(ApprovalStore.prototype,'writeExecutionRecord');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_ENV_FILE_UNSUPPORTED');
+    expect(read.mock.calls.some(args=>args.includes('--binary'))).toBe(false);expect(write).not.toHaveBeenCalled();
+    expect(()=>prePrReviewPacket(f.policy,f.name)).toThrow();
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+    expect(before.filter(n=>n.endsWith('.json')).some(n=>fs.readFileSync(path.join(f.store.directory,n),'utf8').includes(fake))).toBe(false);
+  });
+  it.each(['unstaged','staged','committed'])('blocks %s environment renames, including a rename into the public example',async layer=>{
+    const f=await setup(false);fs.writeFileSync(path.join(f.root,'.env'),'TOKEN=FICTITIOUS_RENAME_VALUE\n');
+    git(f.root,'add','.env');git(f.root,'commit','-m','Disposable environment rename fixture');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('.env','.env.example');
+    fs.renameSync(path.join(f.root,'.env'),path.join(f.root,'.env.example'));
+    if(layer!=='unstaged')git(f.root,'add','--','.env','.env.example');if(layer==='committed')git(f.root,'commit','-m','Disposable rename');
+    const read=vi.spyOn(releaseSource,'gitReadRaw');expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_ENV_FILE_UNSUPPORTED');
+    expect(read.mock.calls.some(args=>args.includes('--binary'))).toBe(false);
+  });
+  it('preserves all three diff layers and review bytes for the exact .env.example exception',async()=>{
+    const f=await setup(false);f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('.env.example');
+    fs.writeFileSync(path.join(f.root,'.env.example'),'PUBLIC=committed\n');git(f.root,'add','.env.example');git(f.root,'commit','-m','Disposable public template');
+    fs.writeFileSync(path.join(f.root,'.env.example'),'PUBLIC=staged\n');git(f.root,'add','.env.example');fs.writeFileSync(path.join(f.root,'.env.example'),'PUBLIC=unstaged\n');
+    const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+    expect(packet.diff.committed).toContain('+PUBLIC=committed');expect(packet.diff.staged).toContain('+PUBLIC=staged');expect(packet.diff.unstaged).toContain('+PUBLIC=unstaged');
+    expect(packet.files.find(e=>e.path==='.env.example')?.contentBase64).toBe(Buffer.from('PUBLIC=unstaged\n').toString('base64'));
+  });
+  it.each(['.env.example.local','.env.example ','nested/.ENV.EXAMPLE','ambiguous\\.env'])('blocks unsafe or non-exact example path %s',async file=>{
+    const f=await setup(false);f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push(file);fs.mkdirSync(path.dirname(path.join(f.root,file)),{recursive:true});fs.writeFileSync(path.join(f.root,file),'FICTITIOUS_ONLY');
+    const read=vi.spyOn(releaseSource,'gitReadRaw');expect(()=>freezePrePrCandidate(f.policy)).toThrow(file.includes('\\')?'PREPR_UNSAFE_SCOPE':'PREPR_ENV_FILE_UNSUPPORTED');
+    expect(read.mock.calls.some(args=>args.includes('--binary'))).toBe(false);
+  });
+  it('blocks packet export if a prohibited file appears after freezing',async()=>{
+    const f=await setup(false);f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('.env');
+    const name=freezePrePrCandidate(f.policy),before=fs.readdirSync(f.store.directory).sort();fs.writeFileSync(path.join(f.root,'.env'),'TOKEN=FICTITIOUS_AFTER_FREEZE');
+    expect(()=>prePrReviewPacket(f.policy,name)).toThrow('PREPR_ENV_FILE_UNSUPPORTED');
+    expect(reviewPrePr(f.policy,name)).toMatchObject({review:{verdict:'BLOCKED'},adversarialStatus:'NOT_REVIEWED'});
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+  it('treats pathspec-like filenames literally when capturing the exact diff',async()=>{
+    const f=await setup(false),file='literal[1].ts';f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push(file);
+    fs.writeFileSync(path.join(f.root,file),'old\n');git(f.root,'add','--',file);git(f.root,'commit','-m','Disposable literal filename');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');fs.writeFileSync(path.join(f.root,file),'new\n');
+    const packet=prePrReviewPacket(f.policy,freezePrePrCandidate(f.policy));expect(packet.diff.unstaged).toContain('+new');
+  });
+  it.each(['candidate','diff','source'] as const)('rejects an oversized %s explicitly without partial storage or truncation',async kind=>{
+    const f=await setup(false),before=fs.readdirSync(f.store.directory).sort();
+    if(kind==='candidate')fs.writeFileSync(path.join(f.root,'new.ts'),'x'.repeat(3*1024*1024));
+    if(kind==='diff')fs.appendFileSync(path.join(f.root,'code.ts'),'x'.repeat(1100*1024));
+    if(kind==='source')fs.writeFileSync(path.join(f.root,'new.ts'),'x'.repeat(9*1024*1024));
+    const code={candidate:'PREPR_CANDIDATE_TOO_LARGE',diff:'PREPR_DIFF_TOO_LARGE',source:'PREPR_SOURCE_TOO_LARGE'}[kind];
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow(code);expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+
 });

@@ -30,7 +30,8 @@ an evidence verdict, never authorization to commit, push, merge or deploy.
 3. `freezePrePrCandidate(policy)` performs two matching snapshots and writes a
    signed candidate. A read-only snapshot may be taken before approval; it grants
    no authority. It binds HEAD, base, branch, remote, host requirements, index,
-   committed/staged/unstaged binary diffs and source bytes/modes/link targets.
+   committed/staged/unstaged binary diffs, source hashes/modes/link targets, and
+   review bytes for changed files. Unchanged files are hashed without retained Base64.
 4. `prePrReviewPacket(policy, candidateRecord)` returns a data-only copy of the
    frozen diff, changed file bytes and acceptance criteria. It contains no store
    key, grants, callback or permission to alter code/requirements. It can be
@@ -90,8 +91,14 @@ limits report errors. Claude/OpenCode adapters remain links to `.agents/skills`.
 Tracked files and nonignored untracked files are included. Ignored untracked
 source is also included, except fixed generated/runtime roots: `node_modules`,
 `dist`, `coverage`, `.next`, `.execution-qa`, `outputs`. Tracked files in these
-roots are still included. Environment files block instead of exporting secrets; `.env.example` is treated
-as a public source template. This filename convention is not a secret scanner.
+roots are still included. Environment paths are checked before content capture or reading content diffs,
+including deletions and both sides of renames in committed, staged and unstaged
+layers. Git path lists are NUL-delimited, renames are expanded to delete/add and
+content diffs use literal, already vetted pathspecs. Unsafe relative paths block.
+Environment files block instead of exporting secrets; only the exact `.env.example`
+name is treated as a public source template. Case variants and non-exact suffixes
+block conservatively. This filename convention is not a secret scanner and no
+selective secret redaction is used to turn a blocked candidate into an approval.
 Submodules and conflicted indexes are unsupported and block. Git filters/external
 diff tools are disabled for diff capture. No repository configuration is changed.
 
@@ -99,6 +106,24 @@ Changing a source byte, mode, link, index, branch, HEAD, scope, acceptance crite
 required check or reviewer policy invalidates prior evidence. Re-staging unchanged
 bytes also invalidates it: the index is part of the reviewed candidate. Test logs
 are represented by a digest; the host must retain the actual logs separately.
+
+Every source file is still read and hashed for identity, including unchanged large
+files. Only changed-file bytes are retained in the authenticated candidate and
+review packet; its full committed/staged/unstaged diffs remain exact. The packet
+comes from the authenticated candidate after a fresh identity check, not from a
+second unauthenticated content read. Changing an unchanged large file therefore
+invalidates the prior candidate.
+
+ApprovalStore's global 4 MiB serialized-record limit is unchanged. A candidate
+that still cannot fit is rejected as `PREPR_CANDIDATE_TOO_LARGE`, with no record
+written, truncation or missing review bytes. Git content-diff output over its
+existing 1 MiB command limit is `PREPR_DIFF_TOO_LARGE`; the capture's existing
+8 MiB per-file / 32 MiB aggregate byte limits report `PREPR_SOURCE_TOO_LARGE`.
+The 5,000-path capture limit remains. These are separate bounds, not a promise
+that every source below 32 MiB can fit its review data into a single record.
+A roughly 3 MiB unchanged source with a tiny change elsewhere now fits because
+its content is represented by a digest, not Base64. Large changed/untracked files
+can still exceed the record limit and must remain blocked.
 
 Before/after snapshots are not an OS sandbox or continuous write monitor. A
 write-and-restore between observations can escape detection. Dependencies,

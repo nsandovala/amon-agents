@@ -34,4 +34,13 @@ describe('preservation integrity capture',()=>{
     const close=vi.spyOn(fs,'closeSync');vi.spyOn(fs,'readFileSync').mockImplementation(()=>{throw Object.assign(new Error('denied'),{code:'EACCES'});});
     expect(captureIntegrity(root,['file']).errors).toEqual(['file: INTEGRITY_READ_EACCES']);expect(close).toHaveBeenCalledOnce();
   });
+  it('hashes every file while retaining bytes only for requested review paths',()=>{
+    const root=fixture();fs.writeFileSync(path.join(root,'unchanged'),'baseline');fs.writeFileSync(path.join(root,'changed'),'candidate');
+    const complete=captureIntegrity(root,['unchanged','changed']),selective=captureIntegrity(root,['unchanged','changed'],new Set(['changed']));
+    expect(selective.errors).toEqual([]);
+    expect(selective.entries.find(e=>e.path==='changed')).toEqual(complete.entries.find(e=>e.path==='changed'));
+    const {contentBase64,...identity}=complete.entries.find(e=>e.path==='unchanged')!;
+    expect(selective.entries.find(e=>e.path==='unchanged')).toEqual(identity);
+  });
+
 });

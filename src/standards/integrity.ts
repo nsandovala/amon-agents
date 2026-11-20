@@ -15,8 +15,9 @@ export function safeRelative(file: string): boolean {
 /** Integrity capture, not a recursive walker. lstat classifies before content access.
  * Directory links are recorded, never traversed; callers enumerate canonical paths.
  * Errors are explicit, never an empty/successful digest. O_NOFOLLOW protects final opens;
- * before/after checks detect ordinary races, not malicious write-and-restore by the OS owner. */
-export function captureIntegrity(rootInput: string, files: string[]): IntegritySnapshot {
+ * before/after checks detect ordinary races, not malicious write-and-restore by the OS owner.
+ * Optional contentPaths retains bytes only for review inputs; every regular file is still hashed. */
+export function captureIntegrity(rootInput: string, files: string[], contentPaths?: ReadonlySet<string>): IntegritySnapshot {
   const root=fs.realpathSync(rootInput), entries: IntegrityEntry[]=[], errors: string[]=[];
   requireRelease(files.length <= 5000 && new Set(files).size === files.length,'INTEGRITY_PATH_LIMIT');
   let bytes=0;
@@ -49,7 +50,8 @@ export function captureIntegrity(rootInput: string, files: string[]): IntegrityS
           const content=fs.readFileSync(fd), after=fs.fstatSync(fd);
           requireRelease(after.size === before.size && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs,'INTEGRITY_CHANGED');
           bytes+=content.length;
-          entries.push({path:file,kind:'file',mode,sha256:sha256(content),contentBase64:content.toString('base64')});
+          entries.push({path:file,kind:'file',mode,sha256:sha256(content),
+            ...(contentPaths===undefined || contentPaths.has(file) ? {contentBase64:content.toString('base64')} : {})});
         } finally {fs.closeSync(fd);}
       }
       const after=fs.lstatSync(target);
