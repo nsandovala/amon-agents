@@ -162,6 +162,12 @@ export function reviewNextBuildEvidence(evidence: unknown, policy: NextBuildPoli
     if (/non.standard.*NODE_ENV|NODE_ENV.*non.standard/i.test(line))
       add('NEXT_NODE_ENV_INVALID',`Non-standard NODE_ENV diagnostic at combined log line ${index+1}`);
     if (/^\s*(?:⚠|warn(?:ing)?(?=[:\s]|$)|\[warn(?:ing)?\]|\(node:\d+\)\s+(?:\[[A-Z0-9_]+\]\s+)?[A-Za-z]*Warning:)/i.test(line)) {
+      // Next emits this documented performance notice on every fresh CI build.
+      // Exact host-owned classification, never a worker-supplied warning exclusion.
+      if (/^\s*⚠ No build cache found\. Please configure build caching for faster rebuilds\. Read more: https:\/\/nextjs\.org\/docs\/messages\/no-cache\s*$/.test(line)) {
+        add('NEXT_BUILD_CACHE_COLD',`Cold build cache notice at combined log line ${index+1}; retained`,'info');
+        return;
+      }
       const tracing = /trac(?:e|ing)|outputFileTracingRoot|multiple lockfiles|inferred your workspace root/i.test(line);
       add(tracing ? 'NEXT_TRACING_WARNING' : 'NEXT_WARNING_UNCLASSIFIED',
         `${tracing ? 'Tracing' : 'Unclassified'} warning at combined log line ${index+1}; retained and blocking`);
