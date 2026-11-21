@@ -22,3 +22,13 @@ metadata:
    and `src/standards/gates.ts` to reject unknown/unsafe observations.
 5. Only after preflight is safe, install once from the existing lockfile when needed.
    Inspect dependency links again after installation. Record exceptions and blockers.
+
+## Integrity captures
+
+The metadata inspector already uses `lstat` and does not traverse directory links.
+For byte-preservation snapshots, reuse `captureIntegrity` in
+`src/standards/integrity.ts`: classify each entry before reading it, record directory
+and symlink metadata, and hash only regular files. Check `errors` before accepting
+a snapshot. Internal links are recorded without reading their targets; external or
+broken links and read failures are explicit unsafe results. Never hash every
+`git ls-files` entry with `readFile` or replace the Claude/OpenCode adapters.

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { isUtf8 } from 'node:buffer';
 
 export const sha256 = (v: string | Buffer): string => createHash('sha256').update(v).digest('hex');
 export const requireRelease = (condition: unknown, code: string): void => { if (!condition) throw new Error(code); };
@@ -9,10 +10,74 @@ export const inside = (root: string, file: string): boolean => {
   const rel = path.relative(root,file);
   return rel === '' || (!rel.startsWith('..'+path.sep) && rel !== '..' && !path.isAbsolute(rel));
 };
-export function gitRead(root: string, ...args: string[]): string {
-  return execFileSync('/usr/bin/git',['-c','core.fsmonitor=false','-C',root,...args], {encoding:'utf8',stdio:['ignore','pipe','pipe'],
+function gitReadBuffer(root: string, args: string[], input?:string): Buffer {
+  return execFileSync('/usr/bin/git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',root,...args], {stdio:['pipe','pipe','pipe'],input,
     timeout:3000,killSignal:'SIGKILL',maxBuffer:1024*1024,
-    env:{PATH:'/usr/bin:/bin',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}}).trim();
+    env:{PATH:'/usr/bin:/bin',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',
+      GIT_NO_LAZY_FETCH:'1',GIT_ALLOW_PROTOCOL:'',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1'}});
+}
+/** Validate before decoding; unlike TextDecoder defaults this neither replaces bytes
+ * nor removes a UTF-8 BOM. Raw object payloads remain Buffers. */
+export function strictUtf8(bytes:Buffer,code:string):string {
+  requireRelease(isUtf8(bytes),code);return bytes.toString('utf8');
+}
+export function gitReadRaw(root: string, ...args: string[]): string {
+  const diff=args[0]==='diff' || (args[0]==='--literal-pathspecs' && args[1]==='diff');
+  const code=diff && !args.includes('--name-only') ? 'PREPR_DIFF_ENCODING_UNSUPPORTED' : 'PREPR_PATH_ENCODING_UNSUPPORTED';
+  return strictUtf8(gitReadBuffer(root,args),code);
+}
+export function gitRead(root: string, ...args: string[]): string { return gitReadRaw(root,...args).trim(); }
+/** Hash exactly a local blob's bytes, never Git's clean/EOL/encoding conversions. */
+export const gitBlobSha1=(bytes:Buffer):string=>createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
+
+/** Native Git batch metadata/content reads, with transport prohibited by the shared
+ * reader. Only validated object IDs are accepted; no paths, filters or expressions. */
+export function readPrePrIndexBlobs(root:string,ids:string[],contents=false):Map<string,Buffer> {
+  requireRelease(ids.length<=5000 && ids.every(id=>/^[a-f0-9]{40}$/.test(id)),'PREPR_INDEX_UNSUPPORTED');
+  const unique=[...new Set(ids)],result=new Map<string,Buffer>();if(!unique.length)return result;
+  let output:Buffer;
+  try {output=gitReadBuffer(root,['cat-file',contents?'--batch':'--batch-check=%(objectname) %(objecttype)'],unique.join('\n')+'\n');}
+  catch(e) {
+    if(['ENOBUFS','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes((e as NodeJS.ErrnoException).code ?? ''))throw new Error('PREPR_OBJECT_OUTPUT_TOO_LARGE');
+    throw new Error('PREPR_OBJECT_UNAVAILABLE');
+  }
+  let offset=0;
+  for(const id of unique){
+    const end=output.indexOf(10,offset);requireRelease(end>=offset,'PREPR_OBJECT_UNAVAILABLE');
+    const header=strictUtf8(output.subarray(offset,end),'PREPR_OBJECT_UNAVAILABLE');offset=end+1;
+    if(!contents){requireRelease(header===id+' blob','PREPR_OBJECT_UNAVAILABLE');continue;}
+    const match=/^([a-f0-9]{40}) blob (0|[1-9][0-9]*)$/.exec(header);
+    requireRelease(match && match[1]===id,'PREPR_OBJECT_UNAVAILABLE');
+    const size=Number(match![2]);requireRelease(Number.isSafeInteger(size) && size<=output.length-offset-1,'PREPR_OBJECT_UNAVAILABLE');
+    const bytes=output.subarray(offset,offset+size);offset+=size;
+    requireRelease(output[offset++]===10 && gitBlobSha1(bytes)===id,'PREPR_OBJECT_UNAVAILABLE');
+    result.set(id,bytes);
+  }
+  requireRelease(offset===output.length,'PREPR_OBJECT_UNAVAILABLE');return result;
+}
+
+/** Pre-PR metadata-only guard. Neither config enumeration nor cached ls-files reads
+ * worktree content through a filter. Use the SAME host environment as later reads.
+ * Reject all driver declarations, even unused/empty ones: attribute selection (root,
+ * nested, info/attributes or core.attributesFile) cannot make an executable acceptable.
+ * Git resolves effective local/worktree config and conditional/recursive includes.
+ * Do not print config values, rewrite config, or clear index flags to obtain a PASS. */
+export function assertPrePrGitInspectionSafe(root: string): void {
+  let keys:string;
+  try {
+    keys=gitReadRaw(root,'config','--includes','--null','--list','--name-only');
+    requireRelease(keys==='' || keys.endsWith('\0'),'PREPR_GIT_FILTER_UNSAFE');
+    requireRelease(!keys.split('\0').some(key=>/^filter\.[\s\S]*\.(clean|process|smudge)$/i.test(key)),'PREPR_GIT_FILTER_UNSAFE');
+  } catch { throw new Error('PREPR_GIT_FILTER_UNSAFE'); }
+  requireRelease(!keys.split('\0').some(key=>/^extensions\.partialclone$/i.test(key) ||
+    /^remote\.[\s\S]*\.(promisor|partialclonefilter)$/i.test(key)),'PREPR_PARTIAL_CLONE_UNSUPPORTED');
+  try {
+    const entries=gitReadRaw(root,'ls-files','--cached','-v','-z');
+    requireRelease(entries==='' || entries.endsWith('\0'),'PREPR_INDEX_FLAGS_UNSAFE');
+    // -v uses lowercase for assume-unchanged; S/s denotes skip-worktree.
+    // H and M are the only accepted cached tags; unmerged M is rejected by snapshot.
+    requireRelease(entries.split('\0').slice(0,-1).every(row=>/^[HM] [\s\S]+$/.test(row)),'PREPR_INDEX_FLAGS_UNSAFE');
+  } catch { throw new Error('PREPR_INDEX_FLAGS_UNSAFE'); }
 }
 
 /** Hash bytes, names and executable bits, including ignored/untracked source.
