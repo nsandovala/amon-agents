@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { captureIntegrity } from './integrity';
+import { gitBlobSha1 } from '../guardian/release-source';
 const roots:string[]=[];
 function fixture() {const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'prepr-integrity-')));roots.push(root);return root;}
 afterEach(()=>{vi.restoreAllMocks();for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
@@ -41,6 +42,26 @@ describe('preservation integrity capture',()=>{
     expect(selective.entries.find(e=>e.path==='changed')).toEqual(complete.entries.find(e=>e.path==='changed'));
     const {contentBase64,...identity}=complete.entries.find(e=>e.path==='unchanged')!;
     expect(selective.entries.find(e=>e.path==='unchanged')).toEqual(identity);
+  });
+  it('computes raw blob identities without retaining unchanged bytes and includes special mode bits',()=>{
+    const root=fixture(),bytes=Buffer.from([0,255,13,10]);fs.writeFileSync(path.join(root,'raw'),bytes);fs.chmodSync(path.join(root,'raw'),0o1644);
+    fs.symlinkSync('raw',path.join(root,'link'));
+    const r=captureIntegrity(root,['raw','link'],new Set(),{gitBlobHashes:true});
+    expect(r.errors).toEqual([]);
+    expect(r.entries.find(e=>e.path==='raw')).toMatchObject({gitBlobOid:gitBlobSha1(bytes),mode:0o1644});
+    expect(r.entries.find(e=>e.path==='raw')).not.toHaveProperty('contentBase64');
+    expect(r.entries.find(e=>e.path==='link')).toMatchObject({gitBlobOid:gitBlobSha1(Buffer.from('raw')),kind:'symlink'});
+  });
+  it('distinguishes ordinary deletion from an unsafe ancestor even when the leaf is absent',()=>{
+    const root=fixture();fs.symlinkSync(os.tmpdir(),path.join(root,'alias'));
+    const r=captureIntegrity(root,['removed/file','alias/no-such-prepr-file'],new Set(),{allowMissing:true});
+    expect(r.missing).toEqual(['removed/file']);expect(r.errors).toEqual(['alias/no-such-prepr-file: INTEGRITY_LINK_ANCESTOR']);
+  });
+  it('does not classify disappearance after initial lstat as an ordinary deletion',()=>{
+    const root=fixture();fs.writeFileSync(path.join(root,'file'),'x');
+    vi.spyOn(fs,'openSync').mockImplementation(()=>{throw Object.assign(new Error('race'),{code:'ENOENT'});});
+    const r=captureIntegrity(root,['file'],new Set(),{allowMissing:true});
+    expect(r.missing).toEqual([]);expect(r.errors).toEqual(['file: INTEGRITY_READ_ENOENT']);
   });
 
 });

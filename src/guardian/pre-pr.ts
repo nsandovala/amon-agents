@@ -9,7 +9,7 @@ import { captureIntegrity, safeRelative } from '../standards/integrity';
 import { scopeGate } from '../standards/gates';
 import { GuardianFinding, GuardianReview } from './types';
 import { GUARDIAN_POLICY_VERSION, verdictFor } from './evidence-gate';
-import { assertPrePrGitInspectionSafe, gitRead, gitReadRaw as readGitRaw, inside, requireRelease, sha256 } from './release-source';
+import { assertPrePrGitInspectionSafe, gitRead, gitReadRaw as readGitRaw, inside, readPrePrIndexBlobs, requireRelease, sha256 } from './release-source';
 
 // Recheck at every content-inspection boundary, including the final stability read.
 // Other commands below only inspect repository/index metadata.
@@ -31,6 +31,7 @@ interface CandidateContent {
   policySha256: string; index: string; status: string; changedFiles: string[];
   diff: {committed: string; staged: string; unstaged: string};
   files: ReturnType<typeof captureIntegrity>['entries'];
+  rawWorktreeChanges: {path:string;indexMode:string;indexOid:string;indexContentBase64:string}[];
 }
 interface Candidate {
   kind: 'guardian-prepr-candidate/1'; candidateId: string; frozenAt: string; content: CandidateContent;
@@ -78,41 +79,87 @@ function host(input: PrePrPolicy) {
   return {policy,mission,assignment:assignment!,root,store,policySha256};
 }
 const nul=(text:string) => text.split('\0').filter(Boolean);
-function snapshot(input: PrePrPolicy): CandidateContent {
+function indexEntries(index:string) {
+  requireRelease(index==='' || index.endsWith('\0'),'PREPR_INDEX_UNSUPPORTED');
+  const entries=new Map<string,{mode:string;oid:string}>();
+  for(const row of nul(index)){
+    const m=/^([0-7]{6}) ([a-f0-9]{40}) ([0-3])\t([\s\S]+)$/.exec(row);
+    requireRelease(m && m[3]==='0','PREPR_INDEX_UNSUPPORTED');
+    requireRelease(m![1]!=='160000','PREPR_SUBMODULE_UNSUPPORTED');
+    requireRelease(['100644','100755','120000'].includes(m![1]) && !entries.has(m![4]),'PREPR_INDEX_UNSUPPORTED');
+    entries.set(m![4],{mode:m![1],oid:m![2]});
+  }
+  requireRelease(entries.size<=5000,'PREPR_INDEX_UNSUPPORTED');return entries;
+}
+function requireSourcePaths(paths:string[]) {
+  requireRelease(paths.every(f=>safeRelative(f) && !f.includes('\ufffd')),'PREPR_UNSAFE_PATH');
+  requireRelease(paths.every(f=>!f.split('/').some(p=>p!=='.env.example' && /^\.env(?:\.|$)/i.test(p))),'PREPR_ENV_FILE_UNSUPPORTED');
+}
+function snapshot(input: PrePrPolicy, expected?:CandidateContent): CandidateContent {
   const h=host(input), {root,mission}=h;
   assertPrePrGitInspectionSafe(root);
+  requireRelease(gitRead(root,'rev-parse','--show-object-format')==='sha1','PREPR_OBJECT_FORMAT_UNSUPPORTED');
   requireRelease(gitRead(root,'rev-parse','--show-toplevel')===root,'PREPR_ROOT_MISMATCH');
   const branch=gitRead(root,'symbolic-ref','--short','HEAD'), headSha=gitRead(root,'rev-parse','HEAD');
   requireRelease(branch===mission.branch,'PREPR_BRANCH_MISMATCH');
   requireRelease(gitRead(root,'remote','get-url','origin')===h.policy.repositoryUrl,'PREPR_REPOSITORY_MISMATCH');
   gitRead(root,'merge-base','--is-ancestor',mission.baseSha,headSha);
-  const ignored=nul(gitReadRaw(root,'ls-files','--others','--ignored','--exclude-standard','-z','--','.',
-    ...['node_modules','dist','coverage','.next','.execution-qa','outputs'].map(p=>`:(exclude)${p}/**`)));
-  const files=[...nul(gitReadRaw(root,'ls-files','--cached','--others','--exclude-standard','-z')),...ignored];
-  const diffArgs=['--no-ext-diff','--no-textconv','--no-renames','--binary','--full-index'];
   const index=gitReadRaw(root,'ls-files','--stage','-z');
   requireRelease(gitReadRaw(root,'ls-files','--unmerged','-z')==='','PREPR_UNMERGED_INDEX');
-  requireRelease(!nul(index).some(row=>/^160000 /.test(row)),'PREPR_SUBMODULE_UNSUPPORTED');
-  const status=gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none');
-  const changedFiles=[...new Set([
-    ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z',mission.baseSha,headSha,'--')),
-    ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--cached','--')),
-    ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--')),
-    ...nul(gitReadRaw(root,'ls-files','--others','--exclude-standard','-z')),...ignored,
-  ])].sort();
-  // Inspect only path metadata first. Include both sides of renames/deletions in every
-  // diff layer; surviving files alone cannot protect credentials removed from the tree.
-  const inspectedPaths=[...files,...changedFiles];
-  requireRelease(inspectedPaths.every(safeRelative),'PREPR_UNSAFE_PATH');
-  requireRelease(inspectedPaths.every(f=>!f.split('/').some(p=>p!=='.env.example' && /^\.env(?:\.|$)/i.test(p))),'PREPR_ENV_FILE_UNSUPPORTED');
-  const allowed=h.assignment.expectedOutputs.files_to_touch;
-  requireRelease(changedFiles.every(f=>safeRelative(f) && allowed.includes(f)),'PREPR_OUT_OF_SCOPE');
-  // Include tracked deletions in the patch/index, but never read a missing path as content.
-  const deleted=new Set(nul(gitReadRaw(root,'ls-files','--deleted','-z')));
-  const paths=[...new Set(files)].filter(f=>!deleted.has(f));
-  const capture=captureIntegrity(root,paths,new Set(changedFiles));
+  const tracked=indexEntries(index);
+  const ignored=nul(gitReadRaw(root,'ls-files','--others','--ignored','--exclude-standard','-z','--','.',
+    ...['node_modules','dist','coverage','.next','.execution-qa','outputs'].map(p=>`:(exclude)${p}/**`)));
+  const untracked=nul(gitReadRaw(root,'ls-files','--others','--exclude-standard','-z'));
+  const files=[...new Set([...tracked.keys(),...untracked,...ignored])];
+  const nameArgs=['--no-ext-diff','--no-textconv','--no-renames','--ignore-submodules=none','--submodule=short','--name-only','-z'];
+  // Tree/index-only path reads precede source capture. No worktree status/diff yet.
+  const knownChanges=new Set([
+    ...nul(gitReadRaw(root,'diff',...nameArgs,mission.baseSha,headSha,'--')),
+    ...nul(gitReadRaw(root,'diff',...nameArgs,'--cached','--ita-visible-in-index','--')),...untracked,...ignored,
+  ]);
+  requireSourcePaths([...files,...knownChanges]);
+  const capture=captureIntegrity(root,files,knownChanges,{gitBlobHashes:true,allowMissing:true});
   requireRelease(!capture.errors.some(e=>e.endsWith('INTEGRITY_SIZE_LIMIT')),'PREPR_SOURCE_TOO_LARGE');
   requireRelease(capture.errors.length===0,'PREPR_INTEGRITY_UNSAFE');
+  requireRelease(capture.missing!.every(f=>tracked.has(f)),'PREPR_CONTENT_CHANGED');
+  // On reuse, compare physical identity before materializing any new preimages.
+  // A formerly unchanged large file must invalidate the old candidate, not first
+  // fail an export-size check while constructing evidence for different content.
+  if(expected){
+    const identities=(entries:CandidateContent['files'])=>entries.map(({contentBase64,...identity})=>identity);
+    requireRelease(index===expected.index && JSON.stringify(identities(capture.entries))===JSON.stringify(identities(expected.files)),
+      'PREPR_CONTENT_CHANGED');
+  }
+  const byPath=new Map(capture.entries.map(e=>[e.path,e]));
+  const physicalChanges=[...tracked].filter(([file,indexEntry])=>{
+    const entry=byPath.get(file);if(!entry)return true;
+    requireRelease(entry.kind!=='directory','PREPR_TRACKED_TYPE_UNSUPPORTED');
+    return entry.kind!==(indexEntry.mode==='120000'?'symlink':'file') || entry.gitBlobOid!==indexEntry.oid ||
+      (entry.kind==='file' && entry.mode!==Number.parseInt(indexEntry.mode.slice(-3),8));
+  }).map(([file])=>file).sort();
+  // Raw local blob hashes and physical modes are authoritative for scope even when
+  // Git normalizes content or ignores permissions. Git's lists only ADD evidence.
+  const status=gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none');
+  const changedFiles=[...new Set([...knownChanges,...physicalChanges,
+    ...nul(gitReadRaw(root,'diff',...nameArgs,'--'))])].sort();
+  requireSourcePaths(changedFiles);
+  const allowed=h.assignment.expectedOutputs.files_to_touch;
+  requireRelease(changedFiles.every(f=>allowed.includes(f)),'PREPR_OUT_OF_SCOPE');
+  readPrePrIndexBlobs(root,[...tracked.values()].map(e=>e.oid)); // Missing unchanged blobs also block; never fetch.
+  const additional=changedFiles.filter(f=>!knownChanges.has(f) && byPath.get(f)?.kind==='file');
+  const extra=captureIntegrity(root,additional,new Set(additional),{gitBlobHashes:true});
+  requireRelease(extra.errors.length===0,'PREPR_CONTENT_CHANGED');
+  for(const entry of extra.entries){
+    const {contentBase64,...identity}=entry;
+    requireRelease(JSON.stringify(identity)===JSON.stringify(byPath.get(entry.path)),'PREPR_CONTENT_CHANGED');
+    byPath.set(entry.path,entry);
+  }
+  capture.entries=capture.entries.map(e=>byPath.get(e.path)!);
+  // Supply exact preimage bytes only for physically changed tracked files. Never
+  // reconstruct a normalized "raw" patch or ask the reviewer to fetch mutable data.
+  const preimages=readPrePrIndexBlobs(root,physicalChanges.map(f=>tracked.get(f)!.oid),true);
+  const rawWorktreeChanges=physicalChanges.map(file=>({path:file,indexMode:tracked.get(file)!.mode,
+    indexOid:tracked.get(file)!.oid,indexContentBase64:preimages.get(tracked.get(file)!.oid)!.toString('base64')}));
   // Valid internal links are recorded as links; reject changed links into unapproved targets.
   const changedRealPaths=changedFiles.map(f=> {
     const entry=capture.entries.find(e=>e.path===f);
@@ -123,23 +170,24 @@ function snapshot(input: PrePrPolicy): CandidateContent {
   // bytes are represented by hashes; changed bytes and all three exact diffs are retained.
   const readDiff=(...revisions:string[])=>{
     if (!changedFiles.length) return '';
-    try {return gitReadRaw(root,'--literal-pathspecs','diff',...diffArgs,...revisions,'--',...changedFiles);}
+    try {return gitReadRaw(root,'--literal-pathspecs','diff','--no-ext-diff','--no-textconv','--no-renames',
+      '--ignore-submodules=none','--submodule=short','--binary','--full-index',...revisions,'--',...changedFiles);}
     catch(e) {
       if (['ENOBUFS','ERR_CHILD_PROCESS_STDIO_MAXBUFFER'].includes((e as NodeJS.ErrnoException).code ?? '')) throw new Error('PREPR_DIFF_TOO_LARGE');
       throw e;
     }
   };
-  const diff={committed:readDiff(mission.baseSha,headSha),staged:readDiff('--cached'),unstaged:readDiff()};
+  const diff={committed:readDiff(mission.baseSha,headSha),staged:readDiff('--cached','--ita-visible-in-index'),unstaged:readDiff()};
   requireRelease(gitReadRaw(root,'ls-files','--stage','-z')===index &&
     gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none')===status,'PREPR_CONTENT_CHANGED');
   return {root,repositoryUrl:h.policy.repositoryUrl,branch,headSha,baseSha:mission.baseSha,policySha256:h.policySha256,
-    index,status,changedFiles,diff,files:capture.entries};
+    index,status,changedFiles,diff,files:capture.entries,rawWorktreeChanges};
 }
 function current(input:PrePrPolicy, name:string):Candidate {
   const h=host(input), c=h.store.readExecutionRecord(name) as Candidate;
   requireRelease(c?.kind==='guardian-prepr-candidate/1' && validTime(c.frozenAt) && c.content?.policySha256===h.policySha256 &&
     c.candidateId===sha256(JSON.stringify(c.content)),'PREPR_CANDIDATE_INVALID');
-  requireRelease(sha256(JSON.stringify(snapshot(input)))===c.candidateId,'PREPR_CONTENT_CHANGED');
+  requireRelease(sha256(JSON.stringify(snapshot(input,c.content)))===c.candidateId,'PREPR_CONTENT_CHANGED');
   return c;
 }
 /** Freezes read-only evidence, not an approval. All bytes/modes, index and diff layers
@@ -162,7 +210,7 @@ export function prePrReviewPacket(input:PrePrPolicy, name:string) {
   const candidate=current(input,name), h=host(input);
   return structuredClone({candidateId:candidate.candidateId,repositoryUrl:candidate.content.repositoryUrl,
     branch:candidate.content.branch,baseSha:candidate.content.baseSha,headSha:candidate.content.headSha,
-    diff:candidate.content.diff,changedFiles:candidate.content.changedFiles,
+    diff:candidate.content.diff,changedFiles:candidate.content.changedFiles,rawWorktreeChanges:candidate.content.rawWorktreeChanges,
     files:candidate.content.files.filter(f=>candidate.content.changedFiles.includes(f.path)),
     criteria:h.assignment.expectedOutputs,permissions:{modifyCode:false,modifyRequirements:false,authorize:false}});
 }

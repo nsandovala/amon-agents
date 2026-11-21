@@ -214,6 +214,157 @@ describe('PR16 security regressions (disposable filters and masked index)',()=>{
     expect(reviewPrePr(f.policy,name)).toMatchObject({adversarialStatus:'NOT_REVIEWED',publicationAuthorized:false});
   });
 });
+async function partialFixture() {
+  const f=await setup(false),remote=path.join(f.parent,'remote.git'),clone=path.join(f.parent,'partial');
+  git(f.parent,'clone','--bare','--no-local',f.root,remote);git(remote,'config','uploadpack.allowFilter','true');
+  git(f.parent,'clone','--filter=blob:none','--no-checkout','file://'+remote,clone);
+  git(clone,'read-tree','HEAD'); // Populate only index metadata; do not fetch blob contents.
+  for(const file of ['code.ts','.gitignore','.env.example'])fs.copyFileSync(path.join(f.root,file),path.join(clone,file));
+  const marker=path.join(f.parent,'transport-marker.jsonl'),script=path.join(f.parent,'fixture-transport.cjs');
+  fs.writeFileSync(script,"const fs=require('node:fs');fs.appendFileSync(process.argv[2],JSON.stringify({pid:process.pid,event:'closed'})+'\\n');process.exit(1);");
+  git(clone,'config','remote.origin.uploadpack',[process.execPath,script,marker].map(shellQuote).join(' '));
+  f.policy.root=clone;f.policy.repositoryUrl='file://'+remote;
+  return {...f,root:clone,marker};
+}
+describe('trust boundary closure regressions',()=>{
+  it('TRUST RED/GREEN: rejects a partial clone before lazy transport execution',async()=>{
+    const f=await partialFixture();
+    // Deliberately unprotected legacy control; local file transport only, no network.
+    expect(()=>git(f.root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--')).toThrow();
+    expect((await filterExited(f.marker)).length).toBeGreaterThan(0);fs.unlinkSync(f.marker);
+    const before=fs.readdirSync(f.store.directory).sort();let denial:string|undefined;
+    try{freezePrePrCandidate(f.policy);}catch(e){denial=(e as Error).message;}
+    await filterExited(f.marker);
+    expect({denial,executed:fs.existsSync(f.marker)}).toEqual({denial:'PREPR_PARTIAL_CLONE_UNSUPPORTED',executed:false});
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+  it.each(['filemode','eol'])('TRUST RED/GREEN: reconciles hidden %s changes before scope',async kind=>{
+    const f=await setup(false),file=path.join(f.root,'hidden.sh');
+    fs.writeFileSync(file,'#!/bin/sh\nexit 0\n');fs.writeFileSync(path.join(f.root,'.gitattributes'),'hidden.sh text eol=lf\n');
+    git(f.root,'add','hidden.sh','.gitattributes');git(f.root,'commit','-m','Disposable raw comparison fixture');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');
+    if(kind==='filemode'){git(f.root,'config','core.filemode','false');fs.chmodSync(file,0o755);}
+    else fs.writeFileSync(file,'#!/bin/sh\r\nexit 0\r\n');
+    expect(git(f.root,'ls-files','-v','hidden.sh')).toBe('H hidden.sh');
+    expect(git(f.root,'diff','--name-only')).not.toContain('hidden.sh');
+    let denial:string|undefined,omitted=false;
+    try{const name=freezePrePrCandidate(f.policy);omitted=!prePrReviewPacket(f.policy,name).changedFiles.includes('hidden.sh');}catch(e){denial=(e as Error).message;}
+    expect({denial,omitted}).toEqual({denial:'PREPR_OUT_OF_SCOPE',omitted:false});
+  });
+  it('denies lazy fetch in the reader itself even when bypassing the Pre-PR precheck',async()=>{
+    const f=await partialFixture(),before=releaseSource.directoryDigest(path.join(f.root,'.git'),'artifact');
+    const run=vi.mocked(execFileSync);run.mockClear();
+    expect(()=>releaseSource.gitReadRaw(f.root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--')).toThrow();
+    expect(fs.existsSync(f.marker)).toBe(false);
+    expect(releaseSource.directoryDigest(path.join(f.root,'.git'),'artifact')).toBe(before);
+    expect(run.mock.calls.every(c=>(c[2] as any).env.GIT_NO_LAZY_FETCH==='1' && (c[2] as any).env.GIT_ALLOW_PROTOCOL==='')).toBe(true);
+  });
+  it.each(['extensions.partialclone','remote.other.promisor','remote.other.partialclonefilter'])('rejects unsupported %s declarations before object access',async key=>{
+    const f=await setup(false);git(f.root,'config',key,key.endsWith('promisor')?'false':'origin');
+    const run=vi.mocked(execFileSync);run.mockClear();
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_PARTIAL_CLONE_UNSUPPORTED');
+    expect(run.mock.calls.some(c=>c[1]?.some(a=>['merge-base','status','diff','cat-file'].includes(a)))).toBe(false);
+  });
+  it('detects promisor settings in effective includes',async()=>{
+    const f=await setup(false),config=path.join(f.parent,'promisor.config');
+    fs.writeFileSync(config,'[remote "other"]\n promisor = true\n');git(f.root,'config','include.path',config);
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_PARTIAL_CLONE_UNSUPPORTED');
+  });
+  it('blocks a missing unchanged index blob without recovery or store writes',async()=>{
+    const f=await setup(false),oid=git(f.root,'rev-parse','HEAD:.env.example');
+    const object=path.join(f.root,'.git/objects',oid.slice(0,2),oid.slice(2));fs.unlinkSync(object); // Disposable fixture ONLY.
+    const before=fs.readdirSync(f.store.directory).sort(),objects=releaseSource.directoryDigest(path.join(f.root,'.git/objects'),'artifact');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_OBJECT_UNAVAILABLE');
+    expect(fs.existsSync(object)).toBe(false);expect(releaseSource.directoryDigest(path.join(f.root,'.git/objects'),'artifact')).toBe(objects);
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+  it('rejects unsupported object formats before reading candidate objects',async()=>{
+    const f=await setup(false),root=path.join(f.parent,'sha256');fs.mkdirSync(root);git(root,'init','--object-format=sha256');
+    f.policy.root=root;expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_OBJECT_FORMAT_UNSUPPORTED');
+  });
+  it.each(['filemode','eol'])('retains exact preimage/current bytes for an authorized hidden %s change',async kind=>{
+    const f=await setup(false),file=path.join(f.root,'new.ts');
+    fs.writeFileSync(file,'#!/bin/sh\nexit 0\n');fs.writeFileSync(path.join(f.root,'.gitattributes'),'new.ts text eol=lf\n');
+    git(f.root,'add','new.ts','.gitattributes');git(f.root,'commit','-m','Disposable allowed raw change');f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');
+    if(kind==='filemode'){git(f.root,'config','core.filemode','false');fs.chmodSync(file,0o755);}
+    else fs.writeFileSync(file,'#!/bin/sh\r\nexit 0\r\n');
+    expect(git(f.root,'diff','--name-only')).not.toContain('new.ts');
+    const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+    expect(packet.changedFiles).toContain('new.ts');
+    const raw=packet.rawWorktreeChanges.find(e=>e.path==='new.ts')!;
+    expect(raw.indexMode).toBe('100644');expect(raw.indexOid).toBe(git(f.root,'rev-parse',':new.ts'));
+    expect(Buffer.from(raw.indexContentBase64,'base64').toString()).toBe('#!/bin/sh\nexit 0\n');
+    const current=packet.files.find(e=>e.path==='new.ts')!;
+    expect(Buffer.from(current.contentBase64!,'base64')).toEqual(fs.readFileSync(file));expect(current.mode).toBe(kind==='filemode'?0o755:0o644);
+    expect(reviewPrePr(f.policy,name)).toMatchObject({adversarialStatus:'NOT_REVIEWED',publicationAuthorized:false});
+    fs.appendFileSync(file,'later\n');expect(()=>prePrReviewPacket(f.policy,name)).toThrow('PREPR_CONTENT_CHANGED');
+  });
+  it('reconciles the staged preimage rather than HEAD and retains physical CRLF bytes',async()=>{
+    const f=await setup(false);fs.writeFileSync(path.join(f.root,'.git/info/attributes'),'code.ts text eol=lf\n');
+    fs.writeFileSync(path.join(f.root,'code.ts'),'staged\r\n');git(f.root,'add','code.ts');
+    fs.appendFileSync(path.join(f.root,'code.ts'),'unstaged\r\n');
+    const packet=prePrReviewPacket(f.policy,freezePrePrCandidate(f.policy));
+    expect(packet.diff.staged).toContain('+staged');expect(packet.diff.unstaged).toContain('+unstaged');
+    expect(Buffer.from(packet.rawWorktreeChanges.find(e=>e.path==='code.ts')!.indexContentBase64,'base64').toString()).toBe('staged\n');
+    expect(Buffer.from(packet.files.find(e=>e.path==='code.ts')!.contentBase64!,'base64').toString()).toBe('staged\r\nunstaged\r\n');
+  });
+  it.each([0o600,0o1644])('does not ignore physical permission bits %i outside scope',async mode=>{
+    const f=await setup(false);git(f.root,'config','core.filemode','false');fs.chmodSync(path.join(f.root,'.env.example'),mode);
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_OUT_OF_SCOPE');
+  });
+  it.each(['autocrlf','ident','encoding'])('detects raw differences hidden by %s conversion',async kind=>{
+    const f=await setup(false),file=path.join(f.root,'hidden.txt'),original=kind==='ident'?'$Id$\n':'plain text\n';
+    fs.writeFileSync(file,original);git(f.root,'add','hidden.txt');git(f.root,'commit','-m','Disposable normalization fixture');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');
+    if(kind==='autocrlf'){git(f.root,'config','core.autocrlf','true');fs.writeFileSync(file,'plain text\r\n');}
+    if(kind==='ident'){fs.writeFileSync(path.join(f.root,'.git/info/attributes'),'hidden.txt ident\n');fs.writeFileSync(file,'$Id: synthetic $\n');}
+    if(kind==='encoding'){fs.writeFileSync(path.join(f.root,'.git/info/attributes'),'hidden.txt working-tree-encoding=UTF-16LE\n');fs.writeFileSync(file,Buffer.from(original,'utf16le'));}
+    expect(git(f.root,'diff','--name-only')).not.toContain('hidden.txt');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_OUT_OF_SCOPE');
+  });
+  it('captures symlink targets as raw blobs and detects a link replaced by a regular stub',async()=>{
+    const f=await setup(false);fs.symlinkSync('code.ts',path.join(f.root,'new.ts'));
+    git(f.root,'add','new.ts');git(f.root,'commit','-m','Disposable indexed link');f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');
+    git(f.root,'config','core.symlinks','false');fs.unlinkSync(path.join(f.root,'new.ts'));fs.writeFileSync(path.join(f.root,'new.ts'),'code.ts');
+    const packet=prePrReviewPacket(f.policy,freezePrePrCandidate(f.policy));
+    expect(packet.rawWorktreeChanges.find(e=>e.path==='new.ts')).toMatchObject({indexMode:'120000',indexContentBase64:Buffer.from('code.ts').toString('base64')});
+    expect(packet.files.find(e=>e.path==='new.ts')).toMatchObject({kind:'file',contentBase64:Buffer.from('code.ts').toString('base64')});
+  });
+  it('keeps a deleted tracked file and its exact preimage in the frozen packet',async()=>{
+    const f=await setup(false);fs.unlinkSync(path.join(f.root,'code.ts'));
+    const packet=prePrReviewPacket(f.policy,freezePrePrCandidate(f.policy));
+    expect(packet.changedFiles).toContain('code.ts');expect(packet.files.some(e=>e.path==='code.ts')).toBe(false);
+    expect(Buffer.from(packet.rawWorktreeChanges.find(e=>e.path==='code.ts')!.indexContentBase64,'base64').toString()).toBe('original\n');
+    expect(packet.diff.unstaged).toContain('deleted file mode');
+  });
+  it('does not omit an out-of-scope empty intent-to-add file',async()=>{
+    const f=await setup(false);fs.writeFileSync(path.join(f.root,'outside'),'');git(f.root,'add','--intent-to-add','outside');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_OUT_OF_SCOPE');
+  });
+  it('retains binary preimages and rejects tampering with the new raw evidence',async()=>{
+    const f=await setup(false),before=Buffer.from([0,128,10,2]),after=Buffer.from([0,255,10,1]);
+    fs.writeFileSync(path.join(f.root,'code.ts'),before);git(f.root,'add','code.ts');git(f.root,'commit','-m','Disposable binary source');f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');
+    fs.writeFileSync(path.join(f.root,'code.ts'),after);const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+    expect(Buffer.from(packet.rawWorktreeChanges[0].indexContentBase64,'base64')).toEqual(before);
+    expect(Buffer.from(packet.files.find(e=>e.path==='code.ts')!.contentBase64!,'base64')).toEqual(after);
+    const file=path.join(f.store.directory,name+'.json'),envelope=JSON.parse(fs.readFileSync(file,'utf8')),record=JSON.parse(envelope.payload);
+    record.content.rawWorktreeChanges[0].indexContentBase64='';envelope.payload=JSON.stringify(record);fs.writeFileSync(file,JSON.stringify(envelope));
+    expect(()=>prePrReviewPacket(f.policy,name)).toThrow('EXECUTION_RECORD_INVALID');
+  });
+  it('does not export replacement objects instead of the indexed preimage',async()=>{
+    const f=await setup(false),original=git(f.root,'rev-parse',':code.ts');
+    fs.writeFileSync(path.join(f.parent,'replacement'),'fake preimage\n');
+    const replacement=git(f.root,'hash-object','-w',path.join(f.parent,'replacement'));git(f.root,'replace',original,replacement);
+    const packet=prePrReviewPacket(f.policy,freezePrePrCandidate(f.policy));
+    expect(Buffer.from(packet.rawWorktreeChanges.find(e=>e.path==='code.ts')!.indexContentBase64,'base64').toString()).toBe('original\n');
+  });
+  it('blocks excessive raw preimage output explicitly without partial evidence',async()=>{
+    const f=await setup(false);fs.writeFileSync(path.join(f.root,'new.ts'),'x'.repeat(1100*1024));git(f.root,'add','new.ts');git(f.root,'commit','-m','Disposable large preimage');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');fs.chmodSync(path.join(f.root,'new.ts'),0o755);
+    const before=fs.readdirSync(f.store.directory).sort();expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_OBJECT_OUTPUT_TOO_LARGE');
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+});
 describe('existing Guardian pre-PR composition (synthetic principals; no independent review of this implementation)',()=>{
   it('blocks the callback before execution when stored authorization is missing',async()=>{
     const f=await setup(false),execute=vi.fn(async()=>({exitCode:0,output:'must not run'}));

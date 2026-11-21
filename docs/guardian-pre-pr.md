@@ -213,3 +213,85 @@ mechanics, not actual adversarial review of this patch.
 - A developer's blocking finding also blocks. A reviewer warning remains WARN,
   not PASS. Absent authenticated human verification approval blocks independently
   of successful checks or reviewer opinion.
+
+## Inspector trust boundary closure — PR16
+
+Every inspection through the shared Git reader, including native batch object
+reads, imposes `GIT_NO_LAZY_FETCH=1`, an empty `GIT_ALLOW_PROTOCOL`,
+`GIT_TERMINAL_PROMPT=0` and `GIT_NO_REPLACE_OBJECTS=1`. The existing fixed executable,
+disabled hooks/fsmonitor, filter precheck, timeout and output cap remain in force.
+Effective configuration (including includes) declaring `extensions.partialClone`
+or any remote's `promisor`/`partialCloneFilter` blocks as
+`PREPR_PARTIAL_CLONE_UNSUPPORTED` **before object access**. Presence is enough,
+including an unused remote or `promisor=false`; the MVP does not support partial
+clones. A missing required local object fails closed, without transport, recovery,
+or `upload-pack`. The lower-level reader also denies transport if its caller omits
+the precheck. Neither configuration nor existing objects are repaired or rewritten.
+
+`git ls-files --stage -z` supplies path, stage, mode and object ID. Only stage-zero
+regular files and symlinks in SHA-1 repositories are supported; other formats,
+submodules and malformed entries block explicitly. After unsafe/environment paths
+are rejected, `captureIntegrity` computes the Git blob ID locally from each raw
+file or link-target byte sequence, as well as the existing SHA-256 identity. No
+clean filter, EOL conversion or encoding conversion participates in this hash.
+Missing tracked paths count as deletions; directory replacements block. Regular
+file modes are compared against index mode 0644/0755, including permission and
+special bits, regardless of `core.filemode`. Symlink index mode 120000 represents
+link type and target, not historical POSIX link permissions; the observed link
+mode remains bound by the frozen snapshot. ACLs and extended attributes are not
+part of this identity.
+
+Physical differences are added to committed, staged, untracked, ignored-source
+and Git-reported changes **before the allowlist**. Git cannot subtract a physical
+change by normalization or configuration. Masking index flags still block even
+if the file appears unchanged. Index/object presence is checked with native
+`cat-file --batch-check`; raw preimages use `cat-file --batch` with validated object
+IDs only and replacements disabled. This is a bounded local-object check, not a
+full history/object-store fsck. Unrelated historical corruption is not certified.
+
+The authenticated packet adds `rawWorktreeChanges`: indexed mode, object ID and
+exact Base64 preimage for each physically changed tracked path. Its `files` entries
+contain current exact bytes or link targets/modes; an absent entry denotes deletion.
+Reviewers must examine these fields alongside the three Git diffs: a normalized
+Git diff can be empty for a real physical change. These fields participate in the
+same candidate hash, HMAC and fresh-snapshot comparison. Index preimages are read
+only after path/environment/scope checks. Unchanged sources retain hashes, never
+bulk Base64. ApprovalStore's 4 MiB contract is unchanged. Aggregate raw preimage
+output over the reader's 1 MiB bound blocks as `PREPR_OBJECT_OUTPUT_TOO_LARGE`;
+missing/non-blob/invalid batch evidence blocks as `PREPR_OBJECT_UNAVAILABLE`.
+There is no truncation or partial successful packet.
+
+### Consolidated regression matrix
+
+The directed suite combines `pre-pr.test.ts`, `integrity.test.ts`,
+`pre-pr-benchmark.test.ts` and `next-build-collector.test.ts`. Tests use disposable
+repositories and fictitious markers/credentials; historical defective behavior
+is exercised only in fixtures. Actual run counts and exit codes belong in the
+handoff logs, not in this source contract.
+
+| Threat / control | Deterministic observation or conservative block | Residual boundary |
+| --- | --- | --- |
+| Clean/process/smudge; included configuration and attribute sources | Executable declarations block before status/diff; legacy clean/process controls create a marker, guarded freeze does not | Unused/benign drivers also block; no trusted-filter allowlist |
+| Fsmonitor / hooks | Host disables fsmonitor and hooks; benign fsmonitor control proves the hook would otherwise run | Trusted Git binary and OS execution environment required |
+| Partial clone / missing blob / upload-pack | Real blob-less clone triggers the legacy canary; guarded freeze and direct reader never create it; missing unchanged index blob blocks without store/object writes | Declared partial/promisor repositories rejected; no full object-store audit |
+| EOL, autocrlf, ident, encoding, filemode | Independent raw hash/mode reconciliation detects Git-hidden changes; allowed changes retain exact before/after evidence | Equivalent normalized bytes and noncanonical permissions may block conservatively |
+| Assume-unchanged / skip-worktree; scope | Metadata-only flag guard blocks first; raw changes outside allowlist block; empty intent-to-add cannot disappear | Flags are never repaired; exclusive control of index required |
+| Deleted/renamed .env, all three diff layers | Vetted path lists block before content export/store; exact .env.example remains allowed | Filename policy is not a general secret scanner |
+| Symlinks, traversal, unsafe ancestors, deletion, read errors | lstat classification, local link-target hash and target scope; external/broken/ancestor links block; link-to-file changes detected | No traversal through directory links; POSIX ACL/xattr semantics outside identity |
+| Staged/unstaged/untracked/ignored/binary source | Union of path lists and physical comparison; exact index preimage and raw current bytes; replacement objects disabled | Fixed generated/runtime exclusions remain; source and record limits still block |
+| Altered records / code after freeze / large unchanged source | HMAC and fresh candidate identity reject tampering or later byte/mode/index changes, including raw preimages | HMAC trusts host key/owner; write-and-restore between observations is not excluded |
+| Missing/expired/revoked grants; incomplete dependencies | Existing authorization contracts block check callback before execution and revalidate after it | Trusted host evidence provenance and clock are required |
+| Missing independent review | `NOT_REVIEWED`; human review remains pending even with passing deterministic tests | Unit-test reviewer identities are fixtures, not a real independent review |
+| Build chronology, clocks, warning routes, descendant timeout | Existing historical benchmark and owned-group collector regressions remain required | Semantic completeness of tests and deliberate process-group escape are not solved |
+
+These finite counterexamples do **not** demonstrate universal absence of
+vulnerabilities. The host, Git executable, store key and policy adapter are trusted.
+Checks and two snapshots are not atomic OS isolation: a hostile concurrent process
+can mutate and restore configuration, objects or files between observations.
+Exclusive host control is a prerequisite; resource exhaustion, hostile process
+escape and integrity of external dependencies/toolchains require separate controls.
+No automatic publication, independent-review receipt or human approval is produced.
+
+Git behavior references: [environment controls](https://git-scm.com/docs/git),
+[native batch object reads](https://git-scm.com/docs/git-cat-file), and
+[blob hashing versus filters](https://git-scm.com/docs/git-hash-object).
