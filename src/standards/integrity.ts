@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { gitBlobSha1, inside, requireRelease, sha256 } from '../guardian/release-source';
+import { performance } from 'node:perf_hooks';
+import { gitBlobSha1, inside, requireRelease, sha256, strictUtf8 } from '../guardian/release-source';
 
 export interface IntegrityEntry {
   path: string; kind: 'file'|'directory'|'symlink'; mode: number;
@@ -11,6 +12,76 @@ export interface IntegritySnapshot { entries: IntegrityEntry[]; errors: string[]
 export function safeRelative(file: string): boolean {
   return typeof file === 'string' && file.length > 0 && !path.isAbsolute(file) &&
     !file.includes('\\') && !file.includes('\0') && file.split('/').every(p => !!p && p !== '.' && p !== '..' && p !== '.git');
+}
+export const generatedSourceRoots=['node_modules','dist','coverage','.next','.execution-qa','outputs'] as const;
+export const inventoryLimits=Object.freeze({entries:5000,depth:32,pathBytes:4096,totalPathBytes:1024*1024,milliseconds:3000});
+/** Compare all path components, including directory prefixes and deleted/index paths.
+ * NFC + lowercase is deliberately conservative, not a filesystem collation emulator. */
+export function assertInventoryNames(paths:string[]):void {
+  requireRelease(paths.length<=inventoryLimits.entries*6,'PREPR_INVENTORY_ENTRY_LIMIT');
+  const unique=new Set(paths),names=new Map<string,string>(),started=performance.now();let bytes=0;
+  requireRelease(unique.size<=inventoryLimits.entries,'PREPR_INVENTORY_ENTRY_LIMIT');
+  for(const file of unique){
+    requireRelease(performance.now()-started<=inventoryLimits.milliseconds,'PREPR_INVENTORY_TIME_LIMIT');
+    const size=Buffer.byteLength(file);bytes+=size;
+    requireRelease(size<=inventoryLimits.pathBytes && bytes<=inventoryLimits.totalPathBytes,'PREPR_INVENTORY_PATH_LIMIT');
+    requireRelease(file.split('/').length<=inventoryLimits.depth,'PREPR_INVENTORY_DEPTH_LIMIT');
+    requireRelease(safeRelative(file),'PREPR_UNSAFE_PATH');let prefix='';
+    for(const part of file.split('/')){
+      prefix=prefix?prefix+'/'+part:part;
+      const folded=prefix.normalize('NFC').toLowerCase(),previous=names.get(folded);
+      requireRelease(previous===undefined || previous===prefix,'PREPR_INVENTORY_CASE_COLLISION');
+      names.set(folded,prefix);
+    }
+  }
+}
+/** Bounded metadata enumeration for the existing integrity capture. Never follows
+ * symlinks or reads file content. A generated root is pruned only if it is an actual
+ * directory with no indexed descendants; tracked source always takes precedence.
+ * Deadlines are cooperative between syscalls, not cancellation of blocked OS I/O. */
+export function inventorySource(rootInput:string,indexPaths:string[]):{files:string[];directories:string[]} {
+  const root=fs.realpathSync(rootInput),files:string[]=[],directories:string[]=[];
+  const started=performance.now();let count=0,pathBytes=0;
+  const budget=()=>requireRelease(performance.now()-started<=inventoryLimits.milliseconds,'PREPR_INVENTORY_TIME_LIMIT');
+  const walk=(relative:string,depth:number)=>{
+    budget();requireRelease(depth<=inventoryLimits.depth,'PREPR_INVENTORY_DEPTH_LIMIT');
+    const full=path.join(root,relative),before=fs.lstatSync(full);
+    requireRelease(before.isDirectory() && !before.isSymbolicLink(),'PREPR_INVENTORY_UNSAFE');
+    // Node 20/22 accept buffer names; @types/node's OpenDirOptions omits that literal.
+    const dir=fs.opendirSync(full,{encoding:'buffer' as BufferEncoding,bufferSize:1});
+    try {
+      for(;;){
+        budget();const entry=dir.readSync();budget();if(!entry)break;
+        requireRelease(++count<=inventoryLimits.entries,'PREPR_INVENTORY_ENTRY_LIMIT');
+        const raw=entry.name as unknown;
+        requireRelease(Buffer.isBuffer(raw),'PREPR_PATH_ENCODING_UNSUPPORTED');
+        const name=strictUtf8(raw as Buffer,'PREPR_PATH_ENCODING_UNSUPPORTED');
+        const file=relative?relative+'/'+name:name;
+        const bytes=Buffer.byteLength(file);pathBytes+=bytes;
+        requireRelease(bytes<=inventoryLimits.pathBytes && pathBytes<=inventoryLimits.totalPathBytes,'PREPR_INVENTORY_PATH_LIMIT');
+        // The root Git metadata directory/file is not source. Case aliases or links
+        // are not equivalent exclusions, nor are nested repositories supported.
+        const stat=fs.lstatSync(path.join(root,file));budget();
+        if(file==='.git'){
+          requireRelease(stat.isDirectory() || stat.isFile(),'PREPR_INVENTORY_UNSAFE');continue;
+        }
+        requireRelease(safeRelative(file) && !file.split('/').some(p=>p.toLowerCase()==='.git'),'PREPR_UNSAFE_PATH');
+        if(stat.isDirectory()){
+          directories.push(file);
+          if(!relative && generatedSourceRoots.some(p=>p===name) && !indexPaths.some(p=>p===file || p.startsWith(file+'/')))continue;
+          walk(file,depth+1);
+        }else{
+          requireRelease(stat.isSymbolicLink() || (stat.isFile() && stat.nlink===1),'PREPR_INVENTORY_UNSAFE');files.push(file);
+        }
+      }
+    }finally{dir.closeSync();}
+    const after=fs.lstatSync(full);budget();
+    requireRelease(before.ino===after.ino && before.dev===after.dev && before.mode===after.mode &&
+      before.mtimeMs===after.mtimeMs && before.ctimeMs===after.ctimeMs,'PREPR_INVENTORY_CHANGED');
+  };
+  try{walk('',0);assertInventoryNames([...directories,...files,...indexPaths]);budget();}
+  catch(e){if(e instanceof Error && /^PREPR_[A-Z_]+$/.test(e.message))throw e;throw new Error('PREPR_INVENTORY_READ_FAILED');}
+  return {files:files.sort(),directories:directories.sort()};
 }
 /** Integrity capture, not a recursive walker. lstat classifies before content access.
  * Directory links are recorded, never traversed; callers enumerate canonical paths.
@@ -39,7 +110,7 @@ export function captureIntegrity(rootInput: string, files: string[], contentPath
       const before=fs.lstatSync(target), mode=before.mode & 0o7777;
       inspected=true;
       if (before.isSymbolicLink()) {
-        const linkBytes=fs.readlinkSync(target,{encoding:'buffer'}),link=linkBytes.toString('utf8');
+        const linkBytes=fs.readlinkSync(target,{encoding:'buffer'}),link=strictUtf8(linkBytes,'INTEGRITY_UNSAFE_PATH');
         requireRelease(!link.includes('\ufffd'),'INTEGRITY_UNSAFE_PATH');
         let linkState: IntegrityEntry['linkState']='broken';
         try {linkState=inside(root,fs.realpathSync(target)) ? 'internal':'external';} catch (e) {

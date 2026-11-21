@@ -17,8 +17,8 @@ vi.mock('node:child_process',async importOriginal=>{
 const roots:string[]=[];
 const git=(root:string,...args:string[])=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',root,...args],
   {encoding:'utf8',stdio:['ignore','pipe','pipe'],env:{PATH:'/usr/bin:/bin',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_AUTHOR_NAME:'Fixture',GIT_AUTHOR_EMAIL:'test@example.invalid',GIT_COMMITTER_NAME:'Fixture',GIT_COMMITTER_EMAIL:'test@example.invalid'}}).trim();
-async function setup(approve=true,dependency=false) {
-  const parent=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'guardian-prepr-')));roots.push(parent);
+async function setup(approve=true,dependency=false,tempRoot=os.tmpdir()) {
+  const parent=fs.realpathSync(fs.mkdtempSync(path.join(tempRoot,'guardian-prepr-')));roots.push(parent);
   const root=path.join(parent,'source');fs.mkdirSync(root);fs.writeFileSync(path.join(root,'code.ts'),'original\n');
   fs.writeFileSync(path.join(root,'.gitignore'),'dist/\nignored.ts\n');
   fs.writeFileSync(path.join(root,'.env.example'),'EXAMPLE=placeholder\n');
@@ -226,6 +226,88 @@ async function partialFixture() {
   f.policy.root=clone;f.policy.repositoryUrl='file://'+remote;
   return {...f,root:clone,marker};
 }
+describe('final inventory and encoding regressions',()=>{
+  it('blocks physically present paths omitted from Git metadata before any content capture',async()=>{
+    const f=await setup(false),run=vi.mocked(execFileSync);
+    // restoreAllMocks can clear the wrapper implementation while retaining its
+    // native fallback. Import the actual function instead of that mutable wrapper.
+    const original=(await vi.importActual<typeof import('node:child_process')>('node:child_process')).execFileSync;
+    fs.writeFileSync(path.join(f.root,'new.ts'),'allowed but hidden\n');
+    run.mockImplementation(((...args:Parameters<typeof execFileSync>)=>{
+      if(args[1]?.includes('ls-files') && args[1]?.includes('--others'))return Buffer.alloc(0);
+      return original(...args);
+    }) as typeof execFileSync);
+    const read=vi.spyOn(fs,'readFileSync'),before=fs.readdirSync(f.store.directory).sort();
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_INVENTORY_UNACCOUNTED');
+    expect(read.mock.calls.some(c=>typeof c[0]==='number')).toBe(false);
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+  it('keeps ignored source accounted and only excludes generated directories',async()=>{
+    const f=await setup(false);fs.writeFileSync(path.join(f.root,'ignored.ts'),'ignored source\n');
+    fs.mkdirSync(path.join(f.root,'dist'));fs.writeFileSync(path.join(f.root,'dist/build'),'generated');
+    const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+    expect(packet.changedFiles).toContain('ignored.ts');expect(packet.changedFiles).not.toContain('dist/build');
+    fs.appendFileSync(path.join(f.root,'ignored.ts'),'changed');expect(()=>prePrReviewPacket(f.policy,name)).toThrow('PREPR_CONTENT_CHANGED');
+  });
+  it('rejects an unsafe symlink named like a generated directory',async()=>{
+    const f=await setup(false);fs.symlinkSync(f.parent,path.join(f.root,'dist'));
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow();
+  });
+  it.each(['staged','committed'])('preserves valid UTF-8 and BOM in %s deletion diffs',async layer=>{
+    const f=await setup(false),bytes=Buffer.from('\ufeffcaf\u00e9 \ud83d\ude42\n'),file=path.join(f.root,'data.csv');
+    fs.writeFileSync(file,bytes);git(f.root,'add','data.csv');git(f.root,'commit','-m','Disposable UTF-8 source');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('data.csv');
+    fs.unlinkSync(file);git(f.root,'add','data.csv');if(layer==='committed')git(f.root,'commit','-m','Disposable deletion');
+    const packet=prePrReviewPacket(f.policy,freezePrePrCandidate(f.policy));
+    expect(Buffer.from(packet.diff[layer==='staged'?'staged':'committed']).includes(bytes)).toBe(true);
+  });
+  it('retains a lossless Git binary deletion patch that restores the exact bytes',async()=>{
+    const f=await setup(false),bytes=Buffer.from([0,255,233,10]),file=path.join(f.root,'data.bin');
+    fs.writeFileSync(file,bytes);git(f.root,'add','data.bin');git(f.root,'commit','-m','Disposable binary source');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('data.bin');
+    fs.unlinkSync(file);git(f.root,'add','data.bin');const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+    expect(packet.diff.staged).toContain('GIT binary patch');
+    const patch=path.join(f.parent,'restore.patch');fs.writeFileSync(patch,packet.diff.staged);git(f.root,'apply','--reverse','--binary',patch);
+    expect(fs.readFileSync(file)).toEqual(bytes);expect(()=>prePrReviewPacket(f.policy,name)).toThrow('PREPR_CONTENT_CHANGED');
+  });
+  it('rejects malformed Git path bytes rather than decoding replacements',()=>{
+    vi.mocked(execFileSync).mockReturnValueOnce(Buffer.from([72,32,255,0]));
+    expect(()=>releaseSource.gitReadRaw('/unused','ls-files','--cached','-v','-z')).toThrow('PREPR_PATH_ENCODING_UNSUPPORTED');
+    expect(releaseSource.strictUtf8(Buffer.from('\ufeffvalid \ufffd'),'invalid')).toBe('\ufeffvalid \ufffd');
+    expect(()=>releaseSource.strictUtf8(Buffer.from([0xc0,0xaf]),'invalid')).toThrow('invalid');
+  });
+  it.runIf(process.platform==='linux' || !!process.env.AMON_PREPR_CASE_FIXTURE_ROOT)('FINAL RED/GREEN: inventories case-distinct hidden untracked files on a case-sensitive filesystem',async()=>{
+    const f=await setup(false,false,process.env.AMON_PREPR_CASE_FIXTURE_ROOT ?? os.tmpdir()),hidden=path.join(f.root,'CODE.ts');
+    git(f.root,'config','core.ignoreCase','true');fs.writeFileSync(hidden,'hidden outside scope\n');
+    expect(fs.readFileSync(path.join(f.root,'code.ts'),'utf8')).toBe('candidate\n');
+    expect(fs.readdirSync(f.root)).toContain('CODE.ts');
+    expect(git(f.root,'ls-files','--others','--exclude-standard')).not.toContain('CODE.ts');
+    expect(git(f.root,'ls-files','--others','--ignored','--exclude-standard')).not.toContain('CODE.ts');
+    const before=fs.readdirSync(f.store.directory).sort();let denial:string|undefined,omitted=false,reused=false;
+    try{const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+      omitted=!packet.changedFiles.includes('CODE.ts');fs.appendFileSync(hidden,'later\n');
+      reused=JSON.stringify(prePrReviewPacket(f.policy,name))===JSON.stringify(packet);
+    }catch(e){denial=(e as Error).message;}
+    expect({denial,omitted,reused}).toEqual({denial:'PREPR_INVENTORY_CASE_COLLISION',omitted:false,reused:false});
+    expect(()=>prePrReviewPacket(f.policy,f.name)).toThrow('PREPR_INVENTORY_CASE_COLLISION');
+    fs.appendFileSync(hidden,'later\n');
+    expect(()=>prePrReviewPacket(f.policy,f.name)).toThrow('PREPR_INVENTORY_CASE_COLLISION');
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+  it.each(['staged','committed'])('FINAL RED/GREEN: rejects lossy %s Latin-1 deletion evidence',async layer=>{
+    const f=await setup(false),file=path.join(f.root,'data.csv');
+    fs.writeFileSync(file,Buffer.from('caf\u00e9\n','latin1'));git(f.root,'add','data.csv');git(f.root,'commit','-m','Disposable Latin-1 source');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('data.csv');
+    fs.unlinkSync(file);git(f.root,'add','data.csv');if(layer==='committed')git(f.root,'commit','-m','Disposable deletion');
+    const before=fs.readdirSync(f.store.directory).sort();let denial:string|undefined,lossy=false;
+    try{const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+      lossy=packet.diff[layer==='staged'?'staged':'committed'].includes('caf\ufffd') &&
+        !packet.files.some(e=>e.path==='data.csv') && !packet.rawWorktreeChanges.some(e=>e.path==='data.csv');
+    }catch(e){denial=(e as Error).message;}
+    expect({denial,lossy}).toEqual({denial:'PREPR_DIFF_ENCODING_UNSUPPORTED',lossy:false});
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+});
 describe('trust boundary closure regressions',()=>{
   it('TRUST RED/GREEN: rejects a partial clone before lazy transport execution',async()=>{
     const f=await partialFixture();

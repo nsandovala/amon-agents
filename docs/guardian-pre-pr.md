@@ -9,7 +9,8 @@ an evidence verdict, never authorization to commit, push, merge or deploy.
 - `captureIntegrity` uses the existing `inside`/`sha256` helpers. It supplements
   preservation captures; it does not replace the Python metadata inspector.
 - `gitReadRaw` shares the existing fixed executable, disabled fsmonitor, timeout
-  and output limit with `gitRead`. The raw variant preserves exact diff bytes.
+  and output limit with `gitRead`. String output is decoded only after strict UTF-8
+  validation; unsupported diff encodings block rather than lose bytes.
 - `GuardianReview`, `GuardianFinding`, policy version and `verdictFor` retain the
   existing verdict semantics; there is no parallel review database or provider.
 - `MissionContract`, `planHash`, `approvalContext` and `canPerform` bind scope,
@@ -295,3 +296,77 @@ No automatic publication, independent-review receipt or human approval is produc
 Git behavior references: [environment controls](https://git-scm.com/docs/git),
 [native batch object reads](https://git-scm.com/docs/git-cat-file), and
 [blob hashing versus filters](https://git-scm.com/docs/git-hash-object).
+
+## Physical inventory and lossless encoding — PREPR-FINAL-INVENTORY-ENCODING
+
+Before content capture, `inventorySource` in the existing integrity module streams
+directory entries with `opendirSync` (one buffered entry), decodes names strictly,
+and classifies each entry with `lstat`. It never opens source content or follows
+symlinks. Root `.git` metadata is excluded; nested Git metadata, case aliases and
+special/hardlinked entries block. The existing generated roots (`node_modules`,
+`dist`, `coverage`, `.next`, `.execution-qa`, `outputs`) are pruned only when they
+are actual root directories with no indexed descendants. A file/symlink with that
+name and nested directories with those names are not exclusions. If indexed
+source exists inside a generated root, enumeration takes precedence; additional
+Git-hidden generated paths there can conservatively block as unaccounted.
+
+The physical inventory is reconciled with index, untracked and ignored paths
+before `captureIntegrity`. Any physical source path absent from the Git lists,
+or a listed untracked/ignored path absent physically, blocks as
+`PREPR_INVENTORY_UNACCOUNTED`; tracked absence still represents deletion. Physical
+directories cannot substitute for indexed files. NFC/lowercase collisions between
+physical, index and changed path components block as
+`PREPR_INVENTORY_CASE_COLLISION`, including directory prefixes. This is conservative
+ambiguity rejection, not an implementation of every filesystem's collation rules.
+It blocks `code.ts`/`CODE.ts` even if both are allowed. Intentional case-only or
+normalization-only renames may therefore require a different supported candidate.
+No path, Git flag, configuration, line ending or permission is repaired automatically.
+
+Each metadata walk allows at most 5,000 entries (including directories and pruned
+roots), 32 path components, 4,096 UTF-8 bytes per relative path and 1 MiB of total
+relative-path bytes. Name reconciliation independently bounds unique paths and
+metadata bytes, with a bounded input list. A 3,000 ms monotonic deadline is checked
+between filesystem operations and during reconciliation; limits report
+`PREPR_INVENTORY_ENTRY_LIMIT`, `DEPTH_LIMIT`, `PATH_LIMIT` or `TIME_LIMIT` (all with
+the `PREPR_INVENTORY_` prefix). Read failures and changed directory metadata block.
+All opened directory handles close on success or error. The inventory is repeated
+at the end of each snapshot; changed membership blocks before a packet is returned.
+Empty directories are structural inventory, not source-file review bytes. The
+existing two matching freeze snapshots and fresh reuse identity checks remain.
+
+The deadline is cooperative: a synchronous syscall blocked by an unhealthy mount
+cannot be interrupted by the JavaScript timer. Supported use requires a responsive
+local filesystem and exclusive host control. No hard kernel resource containment,
+continuous mutation monitor, hostile-process isolation or universal race safety is
+claimed. Fixed source/record/Git output limits still apply independently.
+
+All Git Buffer-to-string boundaries used by Pre-PR validate UTF-8 **before**
+conversion. Textual diff output with invalid bytes blocks as
+`PREPR_DIFF_ENCODING_UNSUPPORTED`, including staged and committed Latin-1 text
+deletions. Raw path output blocks as `PREPR_PATH_ENCODING_UNSUPPORTED`; earlier
+config/index guards can map that failure to their existing fail-closed codes.
+Physical names and link targets also reject invalid encodings. No replacement
+character is fabricated, BOM is preserved, and no textual preimage is invented.
+Native batch headers are validated before parsing; object bodies stay Buffers and
+retain their existing Base64 representation. Git's ASCII binary patches remain
+supported: the regression reverses a staged binary deletion and verifies the
+restored bytes exactly. Valid UTF-8 deletion diffs, including BOM and multibyte
+characters, remain supported. Arbitrary non-UTF-8 text diffs are deliberately
+unsupported even when some other packet field could retain their original bytes.
+
+| Regression / guarantee | Evidence and behavior | Boundary |
+| --- | --- | --- |
+| Hidden case-distinct untracked source | Real case-sensitive fixture + core.ignoreCase=true: RED omitted CODE.ts and reused an identical packet after mutation; GREEN rejects freeze and reuse | Local QA uses explicitly authorized temporary APFS case-sensitive; Linux portability remains a later Ubuntu CI check |
+| Physical path omitted from Git without collision | Injected Git-list omission blocks before file content capture/store writes | Failure injection tests reconciliation; not presented as another real Git exploit |
+| Inventory limits and errors | Depth/entry/path caps, injected deadline/read error, directory mutation and handle closure regressions | Deadline/read injections are unit tests; no claim of OS cancellation |
+| Generated, ignored and symlink paths | Ignored source retained and mutation invalidates; only authorized root directories pruned; links not followed by enumeration | Generated/runtime contents remain outside capture unless indexed |
+| Latin-1 staged/committed deletion | RED produced caf� and lacked raw preimages; GREEN rejects before storing/exporting the candidate | Unsupported text encoding blocks conservatively |
+| UTF-8 / binary positives | BOM/multibyte deletion bytes preserved; binary deletion patch restores byte-identical data | Filename validation is not a secret scanner |
+| Prior trust-boundary matrix | Existing clean/process/fsmonitor, lazy-fetch, flags, CRLF/modes, .env/scope, authorization and invalidation tests remain required | CI/test success is not independent review or human authorization |
+
+The case-sensitive test runs on Linux or when the trusted test host explicitly
+sets `AMON_PREPR_CASE_FIXTURE_ROOT` to its disposable case-sensitive volume. It
+asserts actual coexistence; it does not simulate Linux. Test setup/cleanup creates
+only disposable fixtures there. A skipped platform-specific fixture must be
+reported separately; it is not a PASS. Real independent review remains pending
+where no authenticated reviewer receipt exists.

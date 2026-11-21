@@ -5,7 +5,7 @@ import { ApprovalStore } from '../mission/approval-store';
 import { approvalContext } from '../mission/approval-host';
 import { canPerform } from '../mission/state';
 import { EvidenceContract, MissionContract, isEvidence, parseMission, planHash, safeId } from '../mission/contracts';
-import { captureIntegrity, safeRelative } from '../standards/integrity';
+import { assertInventoryNames, captureIntegrity, generatedSourceRoots, inventorySource, safeRelative } from '../standards/integrity';
 import { scopeGate } from '../standards/gates';
 import { GuardianFinding, GuardianReview } from './types';
 import { GUARDIAN_POLICY_VERSION, verdictFor } from './evidence-gate';
@@ -108,7 +108,7 @@ function snapshot(input: PrePrPolicy, expected?:CandidateContent): CandidateCont
   requireRelease(gitReadRaw(root,'ls-files','--unmerged','-z')==='','PREPR_UNMERGED_INDEX');
   const tracked=indexEntries(index);
   const ignored=nul(gitReadRaw(root,'ls-files','--others','--ignored','--exclude-standard','-z','--','.',
-    ...['node_modules','dist','coverage','.next','.execution-qa','outputs'].map(p=>`:(exclude)${p}/**`)));
+    ...generatedSourceRoots.map(p=>`:(exclude)${p}/**`)));
   const untracked=nul(gitReadRaw(root,'ls-files','--others','--exclude-standard','-z'));
   const files=[...new Set([...tracked.keys(),...untracked,...ignored])];
   const nameArgs=['--no-ext-diff','--no-textconv','--no-renames','--ignore-submodules=none','--submodule=short','--name-only','-z'];
@@ -118,6 +118,13 @@ function snapshot(input: PrePrPolicy, expected?:CandidateContent): CandidateCont
     ...nul(gitReadRaw(root,'diff',...nameArgs,'--cached','--ita-visible-in-index','--')),...untracked,...ignored,
   ]);
   requireSourcePaths([...files,...knownChanges]);
+  const inventory=inventorySource(root,[...tracked.keys()]);
+  requireSourcePaths(inventory.files);
+  assertInventoryNames([...inventory.files,...inventory.directories,...files,...knownChanges]);
+  const accounted=new Set(files),physical=new Set(inventory.files);
+  requireRelease(inventory.files.every(f=>accounted.has(f)) && [...untracked,...ignored].every(f=>physical.has(f)),
+    'PREPR_INVENTORY_UNACCOUNTED');
+  requireRelease(inventory.directories.every(f=>!tracked.has(f)),'PREPR_TRACKED_TYPE_UNSUPPORTED');
   const capture=captureIntegrity(root,files,knownChanges,{gitBlobHashes:true,allowMissing:true});
   requireRelease(!capture.errors.some(e=>e.endsWith('INTEGRITY_SIZE_LIMIT')),'PREPR_SOURCE_TOO_LARGE');
   requireRelease(capture.errors.length===0,'PREPR_INTEGRITY_UNSAFE');
@@ -180,6 +187,7 @@ function snapshot(input: PrePrPolicy, expected?:CandidateContent): CandidateCont
   const diff={committed:readDiff(mission.baseSha,headSha),staged:readDiff('--cached','--ita-visible-in-index'),unstaged:readDiff()};
   requireRelease(gitReadRaw(root,'ls-files','--stage','-z')===index &&
     gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none')===status,'PREPR_CONTENT_CHANGED');
+  requireRelease(JSON.stringify(inventorySource(root,[...tracked.keys()]))===JSON.stringify(inventory),'PREPR_INVENTORY_CHANGED');
   return {root,repositoryUrl:h.policy.repositoryUrl,branch,headSha,baseSha:mission.baseSha,policySha256:h.policySha256,
     index,status,changedFiles,diff,files:capture.entries,rawWorktreeChanges};
 }

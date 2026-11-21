@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { isUtf8 } from 'node:buffer';
 
 export const sha256 = (v: string | Buffer): string => createHash('sha256').update(v).digest('hex');
 export const requireRelease = (condition: unknown, code: string): void => { if (!condition) throw new Error(code); };
@@ -15,7 +16,16 @@ function gitReadBuffer(root: string, args: string[], input?:string): Buffer {
     env:{PATH:'/usr/bin:/bin',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',
       GIT_NO_LAZY_FETCH:'1',GIT_ALLOW_PROTOCOL:'',GIT_TERMINAL_PROMPT:'0',GIT_NO_REPLACE_OBJECTS:'1'}});
 }
-export function gitReadRaw(root: string, ...args: string[]): string { return gitReadBuffer(root,args).toString('utf8'); }
+/** Validate before decoding; unlike TextDecoder defaults this neither replaces bytes
+ * nor removes a UTF-8 BOM. Raw object payloads remain Buffers. */
+export function strictUtf8(bytes:Buffer,code:string):string {
+  requireRelease(isUtf8(bytes),code);return bytes.toString('utf8');
+}
+export function gitReadRaw(root: string, ...args: string[]): string {
+  const diff=args[0]==='diff' || (args[0]==='--literal-pathspecs' && args[1]==='diff');
+  const code=diff && !args.includes('--name-only') ? 'PREPR_DIFF_ENCODING_UNSUPPORTED' : 'PREPR_PATH_ENCODING_UNSUPPORTED';
+  return strictUtf8(gitReadBuffer(root,args),code);
+}
 export function gitRead(root: string, ...args: string[]): string { return gitReadRaw(root,...args).trim(); }
 /** Hash exactly a local blob's bytes, never Git's clean/EOL/encoding conversions. */
 export const gitBlobSha1=(bytes:Buffer):string=>createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
@@ -34,7 +44,7 @@ export function readPrePrIndexBlobs(root:string,ids:string[],contents=false):Map
   let offset=0;
   for(const id of unique){
     const end=output.indexOf(10,offset);requireRelease(end>=offset,'PREPR_OBJECT_UNAVAILABLE');
-    const header=output.subarray(offset,end).toString('ascii');offset=end+1;
+    const header=strictUtf8(output.subarray(offset,end),'PREPR_OBJECT_UNAVAILABLE');offset=end+1;
     if(!contents){requireRelease(header===id+' blob','PREPR_OBJECT_UNAVAILABLE');continue;}
     const match=/^([a-f0-9]{40}) blob (0|[1-9][0-9]*)$/.exec(header);
     requireRelease(match && match[1]===id,'PREPR_OBJECT_UNAVAILABLE');
