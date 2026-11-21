@@ -10,12 +10,33 @@ export const inside = (root: string, file: string): boolean => {
   return rel === '' || (!rel.startsWith('..'+path.sep) && rel !== '..' && !path.isAbsolute(rel));
 };
 export function gitReadRaw(root: string, ...args: string[]): string {
-  return execFileSync('/usr/bin/git',['-c','core.fsmonitor=false','-C',root,...args], {encoding:'utf8',stdio:['ignore','pipe','pipe'],
+  return execFileSync('/usr/bin/git',['-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',root,...args], {encoding:'utf8',stdio:['ignore','pipe','pipe'],
     timeout:3000,killSignal:'SIGKILL',maxBuffer:1024*1024,
     env:{PATH:'/usr/bin:/bin',GIT_OPTIONAL_LOCKS:'0',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null'}});
 }
 
 export function gitRead(root: string, ...args: string[]): string { return gitReadRaw(root,...args).trim(); }
+
+/** Pre-PR metadata-only guard. Neither config enumeration nor cached ls-files reads
+ * worktree content through a filter. Use the SAME host environment as later reads.
+ * Reject all driver declarations, even unused/empty ones: attribute selection (root,
+ * nested, info/attributes or core.attributesFile) cannot make an executable acceptable.
+ * Git resolves effective local/worktree config and conditional/recursive includes.
+ * Do not print config values, rewrite config, or clear index flags to obtain a PASS. */
+export function assertPrePrGitInspectionSafe(root: string): void {
+  try {
+    const keys=gitReadRaw(root,'config','--includes','--null','--list','--name-only');
+    requireRelease(keys==='' || keys.endsWith('\0'),'PREPR_GIT_FILTER_UNSAFE');
+    requireRelease(!keys.split('\0').some(key=>/^filter\.[\s\S]*\.(clean|process|smudge)$/i.test(key)),'PREPR_GIT_FILTER_UNSAFE');
+  } catch { throw new Error('PREPR_GIT_FILTER_UNSAFE'); }
+  try {
+    const entries=gitReadRaw(root,'ls-files','--cached','-v','-z');
+    requireRelease(entries==='' || entries.endsWith('\0'),'PREPR_INDEX_FLAGS_UNSAFE');
+    // -v uses lowercase for assume-unchanged; S/s denotes skip-worktree.
+    // H and M are the only accepted cached tags; unmerged M is rejected by snapshot.
+    requireRelease(entries.split('\0').slice(0,-1).every(row=>/^[HM] [\s\S]+$/.test(row)),'PREPR_INDEX_FLAGS_UNSAFE');
+  } catch { throw new Error('PREPR_INDEX_FLAGS_UNSAFE'); }
+}
 
 /** Hash bytes, names and executable bits, including ignored/untracked source.
  * Only the fixed Git, dependency and Next output directories are excluded.

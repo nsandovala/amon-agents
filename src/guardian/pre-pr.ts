@@ -9,7 +9,15 @@ import { captureIntegrity, safeRelative } from '../standards/integrity';
 import { scopeGate } from '../standards/gates';
 import { GuardianFinding, GuardianReview } from './types';
 import { GUARDIAN_POLICY_VERSION, verdictFor } from './evidence-gate';
-import { gitRead, gitReadRaw, inside, requireRelease, sha256 } from './release-source';
+import { assertPrePrGitInspectionSafe, gitRead, gitReadRaw as readGitRaw, inside, requireRelease, sha256 } from './release-source';
+
+// Recheck at every content-inspection boundary, including the final stability read.
+// Other commands below only inspect repository/index metadata.
+function gitReadRaw(root:string,...args:string[]):string {
+  if (args[0]==='status' || args[0]==='diff' || (args[0]==='--literal-pathspecs' && args[1]==='diff'))
+    assertPrePrGitInspectionSafe(root);
+  return readGitRaw(root,...args);
+}
 
 /** Trusted host configuration, never extracted from a diff, worker report or reviewer text.
  * Reviewer IDs must come from an authenticated host adapter, not a model's self-identification. */
@@ -72,6 +80,7 @@ function host(input: PrePrPolicy) {
 const nul=(text:string) => text.split('\0').filter(Boolean);
 function snapshot(input: PrePrPolicy): CandidateContent {
   const h=host(input), {root,mission}=h;
+  assertPrePrGitInspectionSafe(root);
   requireRelease(gitRead(root,'rev-parse','--show-toplevel')===root,'PREPR_ROOT_MISMATCH');
   const branch=gitRead(root,'symbolic-ref','--short','HEAD'), headSha=gitRead(root,'rev-parse','HEAD');
   requireRelease(branch===mission.branch,'PREPR_BRANCH_MISMATCH');
@@ -81,10 +90,10 @@ function snapshot(input: PrePrPolicy): CandidateContent {
     ...['node_modules','dist','coverage','.next','.execution-qa','outputs'].map(p=>`:(exclude)${p}/**`)));
   const files=[...nul(gitReadRaw(root,'ls-files','--cached','--others','--exclude-standard','-z')),...ignored];
   const diffArgs=['--no-ext-diff','--no-textconv','--no-renames','--binary','--full-index'];
-  const status=gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none');
   const index=gitReadRaw(root,'ls-files','--stage','-z');
   requireRelease(gitReadRaw(root,'ls-files','--unmerged','-z')==='','PREPR_UNMERGED_INDEX');
   requireRelease(!nul(index).some(row=>/^160000 /.test(row)),'PREPR_SUBMODULE_UNSUPPORTED');
+  const status=gitReadRaw(root,'status','--porcelain=v1','-z','--untracked-files=all','--ignore-submodules=none');
   const changedFiles=[...new Set([
     ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z',mission.baseSha,headSha,'--')),
     ...nul(gitReadRaw(root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--cached','--')),

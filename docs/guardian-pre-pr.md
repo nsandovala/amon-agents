@@ -99,8 +99,32 @@ Environment files block instead of exporting secrets; only the exact `.env.examp
 name is treated as a public source template. Case variants and non-exact suffixes
 block conservatively. This filename convention is not a secret scanner and no
 selective secret redaction is used to turn a blocked candidate into an approval.
-Submodules and conflicted indexes are unsupported and block. Git filters/external
-diff tools are disabled for diff capture. No repository configuration is changed.
+Submodules and conflicted indexes are unsupported and block before status can
+inspect a nested worktree. External diff/textconv tools remain disabled for diffs;
+these flags alone do **not** prevent clean/process filters.
+
+Before snapshot inspection, and again before each status or diff invocation, the
+host runs a metadata-only guard through the same bounded Git reader. It enumerates
+effective configuration keys with `git config --includes --null --list --name-only`,
+letting Git resolve local/worktree configuration and recursive/conditional includes.
+Any `filter.<driver>.clean`, `.process` or `.smudge` declaration blocks with
+`PREPR_GIT_FILTER_UNSAFE`, including unused or empty declarations. This conservative
+MVP does not trust a driver or attempt to prove that an attribute selector is inactive.
+It therefore covers drivers selected by root/nested `.gitattributes`,
+`.git/info/attributes`, attribute macros or `core.attributesFile` without executing
+their commands. Configuration read/parse errors, timeout or excessive output block;
+configuration values are not included in the error or candidate.
+
+The guard also reads `git ls-files --cached -v -z`, which examines index metadata
+without applying content filters. Lowercase tags (`assume-unchanged`), S/s
+(`skip-worktree`) and unknown/malformed tags block as `PREPR_INDEX_FLAGS_UNSAFE`
+before trusting status, deriving changed paths or applying the scope allowlist.
+Flags are never cleared automatically, even for unchanged or allowed files.
+Adding filters or masking flags after freezing prevents packet/check/review reuse.
+The reader still imposes `core.fsmonitor=false`, now also `core.hooksPath=/dev/null`,
+a 3-second timeout and a 1 MiB output limit, with system/global Git configuration
+excluded by the host. No repository/user configuration, attributes or index flags
+are changed to obtain acceptance.
 
 Changing a source byte, mode, link, index, branch, HEAD, scope, acceptance criterion,
 required check or reviewer policy invalidates prior evidence. Re-staging unchanged
@@ -181,6 +205,11 @@ mechanics, not actual adversarial review of this patch.
 - Changed staging, ignored source or mode bits invalidate even if runtime behavior
   is equivalent. Unknown formats, unsafe links, submodules and capture limits
   block instead of receiving optimistic PASS.
+- Configured filters (including benign Git LFS drivers), empty/unused executable
+  driver declarations and either masking index flag block conservatively. This MVP
+  has no filter allowlist or automatic index repair. Hosts must retain exclusive
+  control of configuration, attributes and index during inspection: the prechecks
+  are not atomic OS isolation against concurrent write-and-restore attacks.
 - A developer's blocking finding also blocks. A reviewer warning remains WARN,
   not PASS. Absent authenticated human verification approval blocks independently
   of successful checks or reviewer opinion.

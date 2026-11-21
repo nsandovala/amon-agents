@@ -10,6 +10,10 @@ import { fixture } from '../mission/demo/fixtures';
 import { planHash } from '../mission/contracts';
 import * as releaseSource from './release-source';
 import { PrePrPolicy, freezePrePrCandidate, prePrReviewPacket, recordPrePrCheck, recordPrePrReview, reviewPrePr } from './pre-pr';
+vi.mock('node:child_process',async importOriginal=>{
+  const original=await importOriginal<typeof import('node:child_process')>();
+  return {...original,execFileSync:vi.fn(original.execFileSync)};
+});
 const roots:string[]=[];
 const git=(root:string,...args:string[])=>execFileSync('/usr/bin/git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-C',root,...args],
   {encoding:'utf8',stdio:['ignore','pipe','pipe'],env:{PATH:'/usr/bin:/bin',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_AUTHOR_NAME:'Fixture',GIT_AUTHOR_EMAIL:'test@example.invalid',GIT_COMMITTER_NAME:'Fixture',GIT_COMMITTER_EMAIL:'test@example.invalid'}}).trim();
@@ -43,6 +47,173 @@ async function setup(approve=true,dependency=false) {
   return {root,parent,store,policy,name,check,independent,review};
 }
 afterEach(()=>{vi.restoreAllMocks();for(const root of roots.splice(0))fs.rmSync(root,{recursive:true,force:true});});
+const shellQuote=(s:string)=>"'"+s.replace(/'/g,"'\\''")+"'";
+// Disposable filter protocol v2: persistent across requests, exits naturally at Git EOF.
+// The marker contains only PID/request metadata, never source contents.
+const filterProgram=String.raw`
+const fs=require('node:fs'),marker=process.argv[2],kind=process.argv[3];
+const note=event=>fs.appendFileSync(marker,JSON.stringify({pid:process.pid,event})+'\n');
+function exact(n){const b=Buffer.alloc(n);let at=0;while(at<n){const k=fs.readSync(0,b,at,n-at,null);if(!k)return null;at+=k;}return b;}
+function packet(){const h=exact(4);if(!h)return null;const n=parseInt(h.toString(),16);return n===0?Buffer.alloc(0):exact(n-4);}
+function group(){const chunks=[];for(;;){const b=packet();if(b===null)return null;if(!b.length)return chunks;chunks.push(b);}}
+function send(b){b=Buffer.from(b);fs.writeSync(1,Buffer.from((b.length+4).toString(16).padStart(4,'0')));fs.writeSync(1,b);}
+const flush=()=>fs.writeSync(1,'0000');
+note('start');
+try {
+ if(kind==='clean'){note('request');fs.writeSync(1,fs.readFileSync(0));}
+ else {
+  group();send('git-filter-server\n');send('version=2\n');flush();
+  group();send('capability=clean\n');flush();
+  while(group()!==null){const content=group();if(content===null)break;note('request');
+   send('status=success\n');flush();for(const b of content)send(b);flush();flush();}
+ }
+} finally {note('closed');}
+`;
+async function filterFixture(kind:'clean'|'process') {
+  const f=await setup(false),marker=path.join(f.parent,'filter-marker.jsonl'),script=path.join(f.parent,'fixture-filter.cjs');
+  fs.writeFileSync(script,filterProgram);
+  fs.writeFileSync(path.join(f.root,'second.ts'),'second original\n');
+  fs.writeFileSync(path.join(f.root,'.gitattributes'),'*.ts filter=canary\n');
+  git(f.root,'add','second.ts','.gitattributes');git(f.root,'commit','-m','Disposable filter attributes');
+  f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');f.policy.mission.assignments[0].expectedOutputs.files_to_touch.push('second.ts','.gitattributes');
+  fs.writeFileSync(path.join(f.root,'second.ts'),'second changed\n');
+  const command=[process.execPath,script,marker,kind].map(shellQuote).join(' ');
+  git(f.root,'config','filter.canary.'+kind,command);git(f.root,'config','filter.canary.required','true');
+  return {...f,marker,command};
+}
+async function filterExited(marker:string) {
+  if(!fs.existsSync(marker))return [];
+  const rows=fs.readFileSync(marker,'utf8').trim().split('\n').map(s=>JSON.parse(s) as {pid:number;event:string});
+  for(const pid of new Set(rows.map(r=>r.pid))){
+    let alive=true;
+    for(let i=0;i<100&&alive;i++){try{process.kill(pid,0);await new Promise(r=>setTimeout(r,10));}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;alive=false;}}
+    expect(alive,'fixture filter '+pid+' must exit at EOF without termination').toBe(false);
+    expect(rows.some(r=>r.pid===pid&&r.event==='closed')).toBe(true);
+  }
+  return rows;
+}
+describe('PR16 security regressions (disposable filters and masked index)',()=>{
+  it.each(['clean','process'] as const)('P1 RED/GREEN: blocks %s before inspection even without authorization',async kind=>{
+    const f=await filterFixture(kind);
+    // Positive exploit control: the exact legacy inspection invokes both filter variants.
+    releaseSource.gitReadRaw(f.root,'diff','--no-ext-diff','--no-textconv','--no-renames','--name-only','-z','--');
+    const control=await filterExited(f.marker);expect(control.filter(r=>r.event==='request').length).toBeGreaterThanOrEqual(2);
+    if(kind==='process')expect(new Set(control.map(r=>r.pid)).size).toBe(1);
+    fs.unlinkSync(f.marker);
+    const before=fs.readdirSync(f.store.directory).sort();let denial:string|undefined;
+    try{freezePrePrCandidate(f.policy);}catch(e){denial=(e as Error).message;}
+    await filterExited(f.marker);
+    expect({denial,executed:fs.existsSync(f.marker)}).toEqual({denial:'PREPR_GIT_FILTER_UNSAFE',executed:false});
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+  });
+  it.each(['assume-unchanged','skip-worktree'])('P2 RED/GREEN: rejects %s before trusting the allowlist',async flag=>{
+    const f=await setup(false);fs.writeFileSync(path.join(f.root,'hidden.ts'),'original\n');
+    git(f.root,'add','hidden.ts');git(f.root,'commit','-m','Disposable hidden file');
+    f.policy.mission.baseSha=git(f.root,'rev-parse','HEAD');
+    git(f.root,'update-index','--'+flag,'hidden.ts');fs.writeFileSync(path.join(f.root,'hidden.ts'),'unauthorized modification\n');
+    expect(releaseSource.gitReadRaw(f.root,'diff','--name-only','--')).toContain('code.ts');
+    expect(releaseSource.gitReadRaw(f.root,'diff','--name-only','--')).not.toContain('hidden.ts');
+    const indexBefore=fs.readFileSync(path.join(f.root,'.git','index')),before=fs.readdirSync(f.store.directory).sort();
+    let denial:string|undefined,omitted=false;
+    try{const name=freezePrePrCandidate(f.policy);omitted=!prePrReviewPacket(f.policy,name).changedFiles.includes('hidden.ts');}catch(e){denial=(e as Error).message;}
+    expect({denial,omitted}).toEqual({denial:'PREPR_INDEX_FLAGS_UNSAFE',omitted:false});
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+    expect(fs.readFileSync(path.join(f.root,'.git','index'))).toEqual(indexBefore);
+  });
+  it.each(['include','recursive','onbranch','gitdir','worktree'])('blocks executable filters from effective %s configuration',async source=>{
+    const f=await filterFixture('process'),config=path.join(f.root,'.git','config'),included=path.join(f.parent,'included.config');
+    fs.writeFileSync(included,'[filter "canary"]\n\tprocess = '+JSON.stringify(f.command)+'\n');
+    git(f.root,'config','--remove-section','filter.canary');
+    if(source==='include')git(f.root,'config','include.path',included);
+    if(source==='recursive'){
+      const first=path.join(f.parent,'first.config');fs.writeFileSync(first,'[include]\n\tpath = included.config\n');
+      git(f.root,'config','include.path',first);
+    }
+    if(source==='onbranch')git(f.root,'config','includeIf.onbranch:fixture/*.path',included);
+    if(source==='gitdir')git(f.root,'config','includeIf.gitdir:'+f.root+'/.git.path',included);
+    if(source==='worktree'){
+      git(f.root,'config','extensions.worktreeConfig','true');
+      fs.copyFileSync(included,path.join(f.root,'.git','config.worktree'));
+    }
+    const configBefore=fs.readFileSync(config),includeBefore=fs.readFileSync(included),read=vi.spyOn(releaseSource,'gitReadRaw');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_GIT_FILTER_UNSAFE');
+    expect(read.mock.calls.some(a=>a.includes('status')||a.includes('diff'))).toBe(false);
+    expect(fs.existsSync(f.marker)).toBe(false);
+    expect(fs.readFileSync(config)).toEqual(configBefore);expect(fs.readFileSync(included)).toEqual(includeBefore);
+  });
+  it.each(['nested','info','external'])('blocks filters selected by %s attributes without executing them',async source=>{
+    const f=await filterFixture('clean');fs.writeFileSync(path.join(f.root,'.gitattributes'),'# no root selection\n');
+    let attributes:string,target='code.ts';
+    if(source==='nested'){
+      fs.mkdirSync(path.join(f.root,'nested'));target='nested/code.ts';fs.writeFileSync(path.join(f.root,target),'nested\n');
+      attributes=path.join(f.root,'nested/.gitattributes');
+    }else if(source==='info')attributes=path.join(f.root,'.git/info/attributes');
+    else{attributes=path.join(f.parent,'attributes');git(f.root,'config','core.attributesFile',attributes);}
+    fs.writeFileSync(attributes,'*.ts filter=canary\n');
+    expect(git(f.root,'check-attr','filter','--',target)).toContain(': filter: canary');
+    const before=fs.readFileSync(attributes);
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_GIT_FILTER_UNSAFE');
+    expect(fs.existsSync(f.marker)).toBe(false);expect(fs.readFileSync(attributes)).toEqual(before);
+  });
+  it('rejects unused and empty executable driver declarations conservatively',async()=>{
+    const f=await setup(false);
+    git(f.root,'config','filter.unused.smudge','');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_GIT_FILTER_UNSAFE');
+  });
+  it.each(['malformed','cycle'])('fails closed when %s configuration cannot be inspected',async kind=>{
+    const f=await setup(false),config=path.join(f.root,'.git','config');
+    if(kind==='malformed')fs.appendFileSync(config,'\n[unterminated');
+    else git(f.root,'config','include.path','config');
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_GIT_FILTER_UNSAFE');
+  });
+  it.each(['ETIMEDOUT','ENOBUFS','EACCES'])('blocks failed config inspection (%s) with bounded host Git options',async code=>{
+    const f=await setup(false),run=vi.mocked(execFileSync);
+    run.mockClear();run.mockImplementationOnce(()=>{throw Object.assign(new Error('private detail'),{code});});
+    expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_GIT_FILTER_UNSAFE');
+    expect(run.mock.calls[0][1]).toEqual(expect.arrayContaining(['core.fsmonitor=false','core.hooksPath=/dev/null','config','--includes','--null','--name-only']));
+    expect(run.mock.calls[0][2]).toMatchObject({timeout:3000,killSignal:'SIGKILL',maxBuffer:1024*1024,env:{GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_OPTIONAL_LOCKS:'0'}});
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+  it.each(['assume-unchanged','skip-worktree'])('blocks a later %s flag without changing the index or issuing a packet/check',async flag=>{
+    const f=await setup(false),before=fs.readdirSync(f.store.directory).sort(),execute=vi.fn(async()=>({exitCode:0,output:'must not run'}));
+    git(f.root,'update-index','--'+flag,'.env.example');
+    const index=fs.readFileSync(path.join(f.root,'.git','index')),read=vi.spyOn(releaseSource,'gitReadRaw');
+    expect(()=>prePrReviewPacket(f.policy,f.name)).toThrow('PREPR_INDEX_FLAGS_UNSAFE');
+    await expect(recordPrePrCheck(f.policy,f.name,'tests',execute)).rejects.toThrow('PREPR_INDEX_FLAGS_UNSAFE');
+    expect(f.review()).toMatchObject({adversarialStatus:'NOT_REVIEWED',review:{verdict:'BLOCKED'}});
+    expect(read.mock.calls.some(a=>a.includes('status')||a.includes('diff'))).toBe(false);
+    expect(execute).not.toHaveBeenCalled();expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);
+    expect(fs.readFileSync(path.join(f.root,'.git','index'))).toEqual(index);
+  });
+  it('rechecks configuration after freezing, before exporting or invoking an unauthorized callback',async()=>{
+    const f=await setup(false),marker=path.join(f.parent,'late-filter'),execute=vi.fn(async()=>({exitCode:0,output:'must not run'}));
+    fs.writeFileSync(path.join(f.root,'.git/info/attributes'),'*.ts filter=late\n');
+    git(f.root,'config','filter.late.clean','printf invoked > '+shellQuote(marker)+'; cat');
+    const config=fs.readFileSync(path.join(f.root,'.git/config')),before=fs.readdirSync(f.store.directory).sort();
+    expect(()=>prePrReviewPacket(f.policy,f.name)).toThrow('PREPR_GIT_FILTER_UNSAFE');
+    await expect(recordPrePrCheck(f.policy,f.name,'tests',execute)).rejects.toThrow('PREPR_GIT_FILTER_UNSAFE');
+    expect(f.review()).toMatchObject({adversarialStatus:'NOT_REVIEWED',review:{verdict:'BLOCKED'}});
+    expect(execute).not.toHaveBeenCalled();expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.readdirSync(f.store.directory).sort()).toEqual(before);expect(fs.readFileSync(path.join(f.root,'.git/config'))).toEqual(config);
+  });
+  it('rejects submodules before status could inspect nested filter configuration',async()=>{
+    const f=await setup(false);git(f.root,'update-index','--add','--cacheinfo','160000,'+f.policy.mission.baseSha+',new.ts');
+    const read=vi.spyOn(releaseSource,'gitReadRaw');expect(()=>freezePrePrCandidate(f.policy)).toThrow('PREPR_SUBMODULE_UNSUPPORTED');
+    expect(read.mock.calls.some(a=>a.includes('status')||a.includes('diff'))).toBe(false);
+  });
+  it('keeps ordinary inspection available and suppresses repository fsmonitor/hooks without configuration edits',async()=>{
+    const f=await setup(false),marker=path.join(f.parent,'hook-marker'),script=path.join(f.parent,'hook.sh');
+    fs.writeFileSync(script,'#!/bin/sh\nprintf invoked > '+shellQuote(marker)+'\n',{mode:0o700});
+    git(f.root,'config','core.fsmonitor',script);git(f.root,'config','core.hooksPath',f.parent);
+    fs.copyFileSync(script,path.join(f.parent,'post-index-change'));
+    const config=fs.readFileSync(path.join(f.root,'.git/config')),index=fs.readFileSync(path.join(f.root,'.git/index'));
+    const name=freezePrePrCandidate(f.policy),packet=prePrReviewPacket(f.policy,name);
+    expect(packet.changedFiles).toContain('code.ts');expect(packet.diff.unstaged).toContain('+candidate');
+    expect(fs.existsSync(marker)).toBe(false);expect(fs.readFileSync(path.join(f.root,'.git/config'))).toEqual(config);
+    expect(fs.readFileSync(path.join(f.root,'.git/index'))).toEqual(index);
+    expect(reviewPrePr(f.policy,name)).toMatchObject({adversarialStatus:'NOT_REVIEWED',publicationAuthorized:false});
+  });
+});
 describe('existing Guardian pre-PR composition (synthetic principals; no independent review of this implementation)',()=>{
   it('blocks the callback before execution when stored authorization is missing',async()=>{
     const f=await setup(false),execute=vi.fn(async()=>({exitCode:0,output:'must not run'}));
