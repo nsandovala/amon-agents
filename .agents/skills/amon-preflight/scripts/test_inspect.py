@@ -2,7 +2,8 @@
 import importlib.util
 from contextlib import contextmanager, nullcontext
 import os
-from pathlib import Path
+import ntpath
+from pathlib import Path, PureWindowsPath
 import tempfile
 import types
 import unittest
@@ -13,15 +14,58 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+class WindowsPathLexicalTests(unittest.TestCase):
+    """Host-independent Windows path rules; no filesystem paths are fabricated."""
+
+    def test_exact_workspace_components(self):
+        root = PureWindowsPath('C:/Work/Repo')
+        self.assertEqual(module.windows_relative_parts(root, PureWindowsPath('c:/Work/Repo/lib')),
+                         ('lib',))
+        self.assertIsNone(module.windows_relative_parts(root, PureWindowsPath('C:/Work/REPO/lib')))
+        self.assertIsNone(module.windows_relative_parts(root, PureWindowsPath('C:/Work/RepoOther/lib')))
+        self.assertEqual(PureWindowsPath('C:/Work/Repo/NODE_MODULES'),
+                         PureWindowsPath('C:/Work/Repo/node_modules'))
+        self.assertNotEqual(('NODE_MODULES',), ('node_modules',))
+        self.assertEqual(ntpath.normcase('NODE_MODULES'), ntpath.normcase('node_modules'))
+
+    def test_extended_drive_and_relative_targets(self):
+        parent = PureWindowsPath('C:/Work/Repo')
+        self.assertEqual(module.windows_target('\\\\?\\C:\\Work\\Repo\\lib', parent),
+                         PureWindowsPath('C:/Work/Repo/lib'))
+        self.assertEqual(module.windows_target('lib', parent), PureWindowsPath('C:/Work/Repo/lib'))
+        self.assertEqual(module.windows_target('\\\\?\\C:\\outside', parent),
+                         PureWindowsPath('C:/outside'))
+
+    def test_unc_and_extended_unc_targets(self):
+        parent = PureWindowsPath('C:/Work/Repo')
+        expected = PureWindowsPath('//server/share/Repo/lib')
+        self.assertEqual(module.windows_target('\\\\server\\share\\Repo\\lib', parent), expected)
+        self.assertEqual(module.windows_target('\\\\?\\UNC\\server\\share\\Repo\\lib', parent), expected)
+        self.assertEqual(module.windows_relative_parts(PureWindowsPath('//server/share/Repo'), expected),
+                         ('lib',))
+        self.assertIsNone(module.windows_relative_parts(parent, expected))
+
+    def test_unknown_namespaces_and_ambiguous_components(self):
+        parent = PureWindowsPath('C:/Work/Repo')
+        for raw in ('\\\\.\\C:\\outside', '\\??\\C:\\outside',
+                    '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\outside',
+                    'C:relative', '\\rooted', '..\\outside'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                module.windows_target(raw, parent)
+
+
 class InspectorTests(unittest.TestCase):
     WIN_TAG_MOUNT_POINT = 0xA0000003
     WIN_TAG_SYMLINK = 0xA000000C
 
     @contextmanager
-    def windows_entries(self, flags=None, tags=None, missing=(), denied=(), native_fields=True):
-        """Synthetic enumeration metadata; creates no links or placeholders."""
+    def windows_entries(self, flags=None, tags=None, missing=(), denied=(), native_fields=True,
+                        ambiguous=()):
+        """Native Windows filesystem fixture with synthetic metadata and no links."""
+        if os.name != 'nt':
+            self.skipTest('Windows enumeration fixture needs a native Windows filesystem; pure path policy runs separately')
         flags, tags = flags or {}, tags or {}
-        missing, denied = set(missing), set(denied)
+        missing, denied, ambiguous = set(missing), set(denied), set(ambiguous)
         real_scandir = os.scandir
         real_lstat = Path.lstat
 
@@ -55,7 +99,14 @@ class InspectorTests(unittest.TestCase):
             if Path(path) in denied:
                 raise PermissionError('synthetic denial')
             with real_scandir(path) as entries:
-                return nullcontext([Entry(entry) for entry in entries])
+                result = [Entry(entry) for entry in entries]
+                for entry in list(result):
+                    if Path(entry.path) in ambiguous:
+                        duplicate = Entry(entry.original)
+                        duplicate.name = entry.name.swapcase()
+                        duplicate.path = str(Path(path)/duplicate.name)
+                        result.append(duplicate)
+                return nullcontext(result)
 
         with patch.object(module.sys, 'platform', 'win32'), \
              patch.object(module.os, 'scandir', scan), \
@@ -197,6 +248,106 @@ class InspectorTests(unittest.TestCase):
                     self.assertEqual(report['dependencyState'], 'local')
                     self.assertGreater(report['freeBytes'], 0)
                 readlink.assert_called_once_with(link)
+
+    def test_windows_case_changed_boundary_is_not_internal(self):
+        with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
+            root = Path(folder)
+            (root/'node_modules').mkdir()
+            link = root/'adapter'
+            link.write_text('synthetic junction entry')
+            changed = str(root.parent / root.name.swapcase() / 'node_modules')
+            with self.windows_entries(flags={link: module.WIN_REPARSE_POINT},
+                                      tags={link: self.WIN_TAG_MOUNT_POINT}), \
+                 patch.object(module.os, 'readlink', return_value=changed), \
+                 patch.object(Path, 'resolve', side_effect=AssertionError('target resolved')):
+                report = module.inspect(root)
+            self.assertFalse(report['metadataComplete'] and not report['externalLinks'])
+            with self.windows_entries(flags={link: module.WIN_REPARSE_POINT},
+                                      tags={link: self.WIN_TAG_MOUNT_POINT}), \
+                 patch.object(module.os, 'readlink', return_value='NODE_MODULES'):
+                report = module.inspect(root)
+            self.assertFalse(report['metadataComplete'])
+
+    def test_windows_extended_drive_junction_is_internal(self):
+        with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
+            root = Path(folder)
+            target = root/'canonical'
+            target.mkdir()
+            link = root/'adapter'
+            link.write_text('synthetic junction entry')
+            raw = '\\\\?\\' + str(target)
+            with self.windows_entries(flags={link: module.WIN_REPARSE_POINT},
+                                      tags={link: self.WIN_TAG_MOUNT_POINT}), \
+                 patch.object(module.os, 'readlink', return_value=raw), \
+                 patch.object(Path, 'resolve', side_effect=AssertionError('target resolved')):
+                report = module.inspect(root)
+            self.assertTrue(report['metadataComplete'])
+            self.assertEqual(report['externalLinks'], [])
+
+    def test_windows_extended_external_and_dependency_targets(self):
+        with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
+            root = Path(folder)
+            canonical = root/'canonical'
+            canonical.mkdir()
+            dependency = root/'node_modules'
+            dependency.write_text('synthetic junction entry')
+            flags = {dependency: module.WIN_REPARSE_POINT}
+            tags = {dependency: self.WIN_TAG_MOUNT_POINT}
+            for raw, state, external in (
+                ('\\\\?\\' + str(canonical), 'local', []),
+                ('\\\\?\\' + str(root.parent), 'external', ['node_modules']),
+            ):
+                with self.windows_entries(flags=flags, tags=tags), \
+                     patch.object(module.os, 'readlink', return_value=raw):
+                    report = module.inspect(root)
+                self.assertTrue(report['metadataComplete'])
+                self.assertEqual(report['dependencyState'], state)
+                self.assertEqual(report['externalLinks'], external)
+
+    def test_windows_uppercase_dependency_name_is_not_local(self):
+        with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
+            root = Path(folder)
+            (root/'NODE_MODULES').mkdir()
+            with self.windows_entries():
+                report = module.inspect(root)
+            self.assertTrue(report['metadataComplete'])
+            self.assertEqual(report['dependencyState'], 'missing')
+            with self.windows_entries(ambiguous=[root/'NODE_MODULES']):
+                report = module.inspect(root)
+            self.assertFalse(report['metadataComplete'])
+            self.assertEqual(report['dependencyState'], 'missing')
+
+    def test_windows_ambiguous_enumeration_and_unknown_namespaces_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:
+            root = Path(folder)
+            target = root/'canonical'
+            target.mkdir()
+            link = root/'adapter'
+            link.write_text('synthetic junction entry')
+            flags = {link: module.WIN_REPARSE_POINT}
+            tags = {link: self.WIN_TAG_MOUNT_POINT}
+            with self.windows_entries(flags=flags, tags=tags, ambiguous=[target]), \
+                 patch.object(module.os, 'readlink', return_value='canonical'):
+                report = module.inspect(root)
+            self.assertFalse(report['metadataComplete'])
+            self.assertTrue(any('ambiguous Windows' in error for error in report['errors']))
+            for raw in ('\\\\.\\C:\\outside', '\\??\\C:\\outside',
+                        '\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\outside',
+                        'C:relative', '\\rooted', '..\\outside'):
+                with self.subTest(raw=raw), self.windows_entries(flags=flags, tags=tags), \
+                     patch.object(module.os, 'readlink', return_value=raw), \
+                     patch.object(Path, 'resolve', side_effect=AssertionError('target resolved')):
+                    report = module.inspect(root)
+                self.assertFalse(report['metadataComplete'])
+                self.assertTrue(report['errors'])
+            for raw in ('\\\\server\\share\\outside',
+                        '\\\\?\\UNC\\server\\share\\outside'):
+                with self.subTest(raw=raw), self.windows_entries(flags=flags, tags=tags), \
+                     patch.object(module.os, 'readlink', return_value=raw), \
+                     patch.object(Path, 'resolve', side_effect=AssertionError('target resolved')):
+                    report = module.inspect(root)
+                self.assertTrue(report['metadataComplete'])
+                self.assertEqual(report['externalLinks'], ['adapter'])
 
     def test_windows_fixture_needs_no_native_windows_stat_fields(self):
         with tempfile.TemporaryDirectory(prefix='.aa-skills-fixture-', dir=Path.cwd()) as folder:

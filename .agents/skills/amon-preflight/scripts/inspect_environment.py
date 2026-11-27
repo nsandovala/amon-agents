@@ -2,8 +2,10 @@
 """Read-only metadata inspection. Never read file content or follow directory links."""
 import datetime
 import json
+import ntpath
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import re
 import shutil
 import stat as stat_module
 import sys
@@ -13,6 +15,55 @@ WIN_OFFLINE = 0x00001000
 WIN_RECALL_ON_OPEN = 0x00040000
 WIN_RECALL_ON_DATA_ACCESS = 0x00400000
 WIN_REPARSE_POINT = 0x00000400
+
+
+def windows_target(raw, parent):
+    """Parse link text lexically without asking the host filesystem to resolve it."""
+    raw = os.fspath(raw)
+    if not isinstance(raw, str) or not raw or '\x00' in raw:
+        raise ValueError('unsupported Windows link target')
+    raw = raw.replace('/', '\\')
+    if raw.startswith('\\\\?\\UNC\\'):
+        raw = '\\\\' + raw[8:]
+    elif raw.startswith('\\\\?\\'):
+        raw = raw[4:]
+        if not re.match(r'^[A-Za-z]:\\', raw):
+            raise ValueError('unsupported Windows link namespace')
+    elif raw.startswith(('\\\\.\\', '\\??\\')):
+        raise ValueError('unsupported Windows link namespace')
+    drive, tail = ntpath.splitdrive(raw)
+    if drive:
+        if not ntpath.isabs(raw):
+            raise ValueError('drive-relative Windows link target')
+        if not (re.fullmatch(r'[A-Za-z]:', drive) or
+                re.fullmatch(r'\\\\[^\\]+\\[^\\]+', drive)):
+            raise ValueError('unsupported Windows link namespace')
+        target = PureWindowsPath(raw)
+    else:
+        if raw.startswith('\\'):
+            raise ValueError('root-relative Windows link target')
+        target = PureWindowsPath(parent) / raw
+    if any(part == '..' or part.endswith((' ', '.')) or ':' in part
+           for part in tail.split('\\') if part):
+        raise ValueError('ambiguous Windows link component')
+    return target
+
+
+def windows_relative_parts(root, target):
+    """Return only an exact-spelling workspace suffix, or None."""
+    root_parts = PureWindowsPath(root).parts
+    target_parts = PureWindowsPath(target).parts
+    if not root_parts or not target_parts:
+        return None
+    root_anchor, target_anchor = root_parts[0], target_parts[0]
+    if re.fullmatch(r'[A-Za-z]:\\', root_anchor):
+        anchors_match = root_anchor.upper() == target_anchor.upper()
+    else:
+        anchors_match = root_anchor == target_anchor
+    if not anchors_match or len(target_parts) < len(root_parts) or \
+            target_parts[1:len(root_parts)] != root_parts[1:]:
+        return None
+    return target_parts[len(root_parts):]
 
 
 def inspect(root):
@@ -30,9 +81,14 @@ def inspect(root):
         # DirEntry.stat(False) uses enumeration metadata on Windows. In particular,
         # RECALL_ON_OPEN is an enumeration-only attribute, not an lstat guarantee.
         with os.scandir(path.parent) as entries:
+            matches = []
             for entry in entries:
-                if os.path.normcase(entry.name) == os.path.normcase(path.name):
-                    return entry
+                if ntpath.normcase(entry.name) == ntpath.normcase(path.name):
+                    matches.append(entry)
+            if len(matches) > 1:
+                raise ValueError('ambiguous Windows component')
+            if matches and matches[0].name == path.name:
+                return matches[0]
         raise FileNotFoundError(str(path))
 
     def windows_metadata(path, entry=None):
@@ -68,12 +124,13 @@ def inspect(root):
         # readlink supplies the link text without resolving its target. Check every
         # component before accepting an internal target; chains remain fail-closed.
         raw = os.readlink(path)
-        target = Path(os.path.abspath(raw if os.path.isabs(raw) else path.parent / raw))
-        if not target.is_relative_to(root):
+        target = windows_target(raw, path.parent)
+        parts = windows_relative_parts(root, target)
+        if parts is None:
             report['externalLinks'].append(str(path.relative_to(root)))
             return None
         current = root
-        for part in target.relative_to(root).parts:
+        for part in parts:
             current = current / part
             data, attributes = windows_metadata(current, windows_entry(current))
             if placeholder(current, attributes):
@@ -82,13 +139,13 @@ def inspect(root):
                 raise ValueError('link target contains another reparse point')
             if current != target and not stat_module.S_ISDIR(data.st_mode):
                 raise ValueError('link target ancestor is not a directory')
-        if path == root / 'node_modules' and target != root and not stat_module.S_ISDIR(data.st_mode):
+        if path.parts == root.parts + ('node_modules',) and parts and not stat_module.S_ISDIR(data.st_mode):
             raise ValueError('node_modules target must be a directory')
         return target
 
     def visit(path, git_entry=False, entry=None):
         try:
-            dependency = path == root / 'node_modules'
+            dependency = path.parts == root.parts + ('node_modules',)
             data = path.lstat() if sys.platform != 'win32' else None
             if sys.platform == 'darwin' and data.st_flags & DATALess:
                 report['datalessFiles'].append(str(path.relative_to(root)))
@@ -125,6 +182,10 @@ def inspect(root):
             if stat_module.S_ISDIR(data.st_mode):
                 if sys.platform == 'win32':
                     with os.scandir(path) as children:
+                        children = list(children)
+                        names = [ntpath.normcase(child.name) for child in children]
+                        if len(names) != len(set(names)):
+                            raise ValueError('ambiguous Windows directory entries')
                         for child in children:
                             visit(Path(child.path), git_entry=child.name == '.git', entry=child)
                 else:
